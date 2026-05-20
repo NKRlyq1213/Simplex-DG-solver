@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 import time
 
+import matplotlib.pyplot as plt
 import numpy as np
 
 from simplex_dg.diagnostics import (
@@ -38,7 +39,8 @@ def run_one_level(
     radius: float,
     flux_type: str,
     use_numba: bool,
-) -> ConvergenceRow:
+    history_every: int,
+) -> tuple[ConvergenceRow, list[dict[str, float]]]:
     omega = (0.0, 0.0, 1.0)
     center0 = (radius, 0.0, 0.0)
 
@@ -78,13 +80,37 @@ def run_one_level(
     def rhs(t, q):
         return full_rhs_split(q, full, use_numba=use_numba)
 
+    def monitor(t, q):
+        q_exact_t = exact_gaussian_solid_body(
+            X=geom.X,
+            t=t,
+            radius=radius,
+            sigma=sigma,
+            amplitude=1.0,
+            center0=center0,
+            omega=omega,
+        )
+
+        rep = error_report(q, q_exact_t, ref, geom)
+
+        return {
+            "level": float(level),
+            "t": float(t),
+            "l2_error": rep.l2_error,
+            "relative_l2_error": rep.relative_l2_error,
+            "linf_error": rep.linf_error,
+            "mass": manifold_integral(q, ref, geom),
+            "l2_norm": manifold_l2_norm(q, ref, geom),
+        }
+
     result = integrate_lsrk54(
         rhs=rhs,
         q0=q0,
         t0=0.0,
         tf=tf,
         dt=dt,
-        monitor=None,
+        monitor=monitor,
+        monitor_every=max(1, history_every),
     )
 
     q_exact = exact_gaussian_solid_body(
@@ -105,7 +131,7 @@ def run_one_level(
     l20 = manifold_l2_norm(q0, ref, geom)
     l2f = manifold_l2_norm(result.q, ref, geom)
 
-    return ConvergenceRow(
+    row = ConvergenceRow(
         level=level,
         order=order,
         n_elements=mesh.elements.shape[0],
@@ -122,6 +148,121 @@ def run_one_level(
         l2_norm_drift=l2f - l20,
     )
 
+    return row, result.history
+
+
+def observed_rates(errors: list[float]) -> list[float | None]:
+    if not errors:
+        return []
+
+    rates: list[float | None] = [None]
+
+    for i in range(1, len(errors)):
+        e0 = float(errors[i - 1])
+        e1 = float(errors[i])
+
+        if e0 <= 0.0 or e1 <= 0.0:
+            rates.append(None)
+        else:
+            rates.append(float(np.log(e0 / e1) / np.log(2.0)))
+
+    return rates
+
+
+def plot_error_time_history(
+    histories: dict[int, list[dict[str, float]]],
+    output_path: Path,
+    quantity: str = "relative_l2_error",
+) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(8.0, 5.0))
+
+    for level, hist in sorted(histories.items()):
+        t = np.array([entry["t"] for entry in hist], dtype=float)
+        y = np.array([entry[quantity] for entry in hist], dtype=float)
+
+        ax.semilogy(t, y, linewidth=1.5, label=f"level {level}")
+
+    ax.set_xlabel("time")
+    ax.set_ylabel(quantity.replace("_", " "))
+    ax.set_title("Gaussian advection error history")
+    ax.grid(True, which="both", linestyle="--", linewidth=0.5)
+    ax.legend()
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=200)
+    plt.close(fig)
+
+
+def plot_error_convergence(
+    rows: list[ConvergenceRow],
+    output_path: Path,
+) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    h = np.array([row.hmin for row in rows], dtype=float)
+    l2 = np.array([row.l2_error for row in rows], dtype=float)
+    rel = np.array([row.relative_l2_error for row in rows], dtype=float)
+    linf = np.array([row.linf_error for row in rows], dtype=float)
+
+    fig, ax = plt.subplots(figsize=(8.0, 5.0))
+
+    ax.loglog(h, l2, marker="o", linewidth=1.5, label="L2 error")
+    #ax.loglog(h, rel, marker="s", linewidth=1.5, label="relative L2 error")
+    ax.loglog(h, linf, marker="^", linewidth=1.5, label="Linf error")
+
+    if len(h) >= 2:
+        p = rows[0].order
+        guide = l2[-1] * (h / h[-1]) ** p
+        ax.loglog(h, guide, linestyle="--", linewidth=1.2, label=f"O(h^{p}) guide")
+
+    ax.set_xlabel("hmin")
+    ax.set_ylabel("error")
+    ax.set_title("Gaussian advection convergence")
+    ax.grid(True, which="both", linestyle="--", linewidth=0.5)
+    ax.legend()
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=200)
+    plt.close(fig)
+
+
+def plot_observed_order(
+    rows: list[ConvergenceRow],
+    output_path: Path,
+) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    levels = np.array([row.level for row in rows], dtype=int)
+    l2_errors = [row.l2_error for row in rows]
+    rel_errors = [row.relative_l2_error for row in rows]
+    linf_errors = [row.linf_error for row in rows]
+
+    l2_rates = observed_rates(l2_errors)
+    #rel_rates = observed_rates(rel_errors)
+    linf_rates = observed_rates(linf_errors)
+
+    fig, ax = plt.subplots(figsize=(8.0, 5.0))
+
+    if len(levels) >= 2:
+        x = levels[1:]
+        ax.plot(x, [r for r in l2_rates[1:]], marker="o", linewidth=1.5, label="L2 observed order")
+        #ax.plot(x, [r for r in rel_rates[1:]], marker="s", linewidth=1.5, label="relative L2 observed order")
+        ax.plot(x, [r for r in linf_rates[1:]], marker="^", linewidth=1.5, label="Linf observed order")
+
+        ax.axhline(rows[0].order, linestyle="--", linewidth=1.2, label=f"target order {rows[0].order}")
+
+    ax.set_xlabel("level")
+    ax.set_ylabel("observed order")
+    ax.set_title("Observed convergence order")
+    ax.grid(True, linestyle="--", linewidth=0.5)
+    ax.legend()
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=200)
+    plt.close(fig)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Gaussian solid-body advection convergence runner.")
@@ -135,7 +276,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--radius", type=float, default=1.0)
     parser.add_argument("--flux", type=str, default="upwind", choices=["upwind", "central", "lf"])
     parser.add_argument("--no-numba", action="store_true")
+    parser.add_argument("--history-every", type=int, default=10)
     parser.add_argument("--output", type=str, default="outputs/convergence/gaussian_sphere_convergence.csv")
+    parser.add_argument("--plot-dir", type=str, default="outputs/convergence/plots")
+    parser.add_argument("--no-plots", action="store_true")
 
     return parser.parse_args()
 
@@ -144,16 +288,18 @@ def main() -> None:
     args = parse_args()
 
     rows: list[ConvergenceRow] = []
+    histories: dict[int, list[dict[str, float]]] = {}
 
     print("Gaussian convergence run")
     print("------------------------")
-    print(f"levels : {args.levels}")
-    print(f"order  : {args.order}")
-    print(f"table  : {args.table}")
-    print(f"cfl    : {args.cfl}")
-    print(f"tf     : {args.tf}")
-    print(f"sigma  : {args.sigma}")
-    print(f"flux   : {args.flux}")
+    print(f"levels        : {args.levels}")
+    print(f"order         : {args.order}")
+    print(f"table         : {args.table}")
+    print(f"cfl           : {args.cfl}")
+    print(f"tf            : {args.tf}")
+    print(f"sigma         : {args.sigma}")
+    print(f"flux          : {args.flux}")
+    print(f"history_every : {args.history_every}")
     print()
 
     t0 = time.perf_counter()
@@ -161,7 +307,7 @@ def main() -> None:
     for level in args.levels:
         start = time.perf_counter()
 
-        row = run_one_level(
+        row, history = run_one_level(
             level=level,
             order=args.order,
             table=args.table,
@@ -171,9 +317,11 @@ def main() -> None:
             radius=args.radius,
             flux_type=args.flux,
             use_numba=not args.no_numba,
+            history_every=args.history_every,
         )
 
         rows.append(row)
+        histories[level] = history
 
         elapsed = time.perf_counter() - start
 
@@ -190,10 +338,42 @@ def main() -> None:
     output = Path(args.output)
     write_convergence_csv(output, rows)
 
+    print()
+    print(f"CSV written to: {output}")
+
+    if not args.no_plots:
+        plot_dir = Path(args.plot_dir)
+        plot_dir.mkdir(parents=True, exist_ok=True)
+
+        time_plot = plot_dir / "gaussian_error_time_history.png"
+        conv_plot = plot_dir / "gaussian_error_convergence.png"
+        order_plot = plot_dir / "gaussian_observed_order.png"
+
+        plot_error_time_history(
+            histories=histories,
+            output_path=time_plot,
+            quantity="relative_l2_error",
+        )
+
+        plot_error_convergence(
+            rows=rows,
+            output_path=conv_plot,
+        )
+
+        plot_observed_order(
+            rows=rows,
+            output_path=order_plot,
+        )
+
+        print()
+        print("Plots written to:")
+        print(f"  {time_plot}")
+        print(f"  {conv_plot}")
+        print(f"  {order_plot}")
+
     elapsed_total = time.perf_counter() - t0
 
     print()
-    print(f"CSV written to: {output}")
     print(f"total elapsed: {elapsed_total:.2f}s")
 
 
