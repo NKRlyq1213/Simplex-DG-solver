@@ -68,103 +68,6 @@ def _sphere_project_with_derivative(
     return X, dX
 
 
-def _affine_reference_map_Y(
-    rs: np.ndarray,
-    vertices: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Affine map before radial projection.
-
-    Y(r,s) = phi1*v1 + phi2*v2 + phi3*v3,
-    with reference vertices (-1,-1), (1,-1), (-1,1).
-
-    Returns
-    -------
-    Y:
-        Shape (Np, 3).
-    Yr:
-        Constant derivative dY/dr, shape (3,).
-    Ys:
-        Constant derivative dY/ds, shape (3,).
-    """
-    rs = np.asarray(rs, dtype=float)
-    vertices = np.asarray(vertices, dtype=float)
-
-    if rs.ndim != 2 or rs.shape[1] != 2:
-        raise ValueError("rs must have shape (Np, 2).")
-
-    if vertices.shape != (3, 3):
-        raise ValueError("vertices must have shape (3, 3).")
-
-    r = rs[:, 0]
-    s = rs[:, 1]
-
-    phi1, phi2, phi3 = _reference_shape_functions(r, s)
-
-    v1 = vertices[0]
-    v2 = vertices[1]
-    v3 = vertices[2]
-
-    Y = (
-        phi1[:, None] * v1[None, :]
-        + phi2[:, None] * v2[None, :]
-        + phi3[:, None] * v3[None, :]
-    )
-
-    Yr = 0.5 * (v2 - v1)
-    Ys = 0.5 * (v3 - v1)
-
-    return Y, Yr, Ys
-
-
-def radial_projection_surface_jacobian(
-    rs: np.ndarray,
-    vertices: np.ndarray,
-    radius: float,
-) -> np.ndarray:
-    """Analytic surface Jacobian for X = R Y / ||Y||.
-
-    J(r,s) = R^2 * |Y . (Yr x Ys)| / ||Y||^3.
-
-    This is the analytic J compatible with the current radial projection
-    geometry map. It should not be replaced by a constant unless the
-    actual mapping X(r,s) is also replaced by the area-preserving chart.
-    """
-    Y, Yr, Ys = _affine_reference_map_Y(rs, vertices)
-
-    rho = np.linalg.norm(Y, axis=1)
-
-    if np.any(rho <= 0.0):
-        raise ValueError("Analytic J received zero pre-projection coordinate.")
-
-    triple = Y @ np.cross(Yr, Ys)
-
-    return (float(radius) ** 2) * np.abs(triple) / (rho ** 3)
-
-
-def radial_projection_face_jacobian(
-    face_id: int,
-    rs_face: np.ndarray,
-    vertices: np.ndarray,
-    radius: float,
-) -> np.ndarray:
-    """Analytic line Jacobian for an edge of X = R Y / ||Y||.
-
-    J_f(t) = R * ||Y x Y_t|| / ||Y||^2.
-    """
-    Y, Yr, Ys = _affine_reference_map_Y(rs_face, vertices)
-
-    drdt, dsdt = _face_direction_rs(face_id)
-    Yt = drdt * Yr + dsdt * Ys
-
-    rho = np.linalg.norm(Y, axis=1)
-
-    if np.any(rho <= 0.0):
-        raise ValueError("Analytic face J received zero pre-projection coordinate.")
-
-    return float(radius) * np.linalg.norm(np.cross(Y, Yt[None, :]), axis=1) / (rho ** 2)
-
-
-
 def map_reference_to_sphere_element(
     rs: np.ndarray,
     vertices: np.ndarray,
@@ -291,38 +194,18 @@ def build_geometry_cache(
         )
 
     cross = np.cross(Xr, Xs)
-
-    # Analytic Jacobian for the current radial projection map:
-    #   X = R Y / ||Y||
-    #   sqrt_g = R^2 |Y . (Y_r x Y_s)| / ||Y||^3
-    sqrt_g = np.zeros((K, Np), dtype=float)
-
-    for k in range(K):
-        sqrt_g[k] = radial_projection_surface_jacobian(
-            rs=ref.rs,
-            vertices=element_vertices[k],
-            radius=mesh.radius,
-        )
+    sqrt_g = np.linalg.norm(cross, axis=2)
 
     if np.any(sqrt_g <= 0.0):
-        raise ValueError("Degenerate analytic surface metric encountered.")
+        raise ValueError("Degenerate surface metric encountered.")
 
-    # Keep the normal direction from the differentiated map. The analytic
-    # sqrt_g is equivalent to ||X_r x X_s|| up to roundoff.
-    cross_norm = np.linalg.norm(cross, axis=2)
-
-    if np.any(cross_norm <= 0.0):
-        raise ValueError("Degenerate surface normal encountered.")
-
-    normal = cross / cross_norm[:, :, None]
+    normal = cross / sqrt_g[:, :, None]
 
     g11 = np.sum(Xr * Xr, axis=2)
     g12 = np.sum(Xr * Xs, axis=2)
     g22 = np.sum(Xs * Xs, axis=2)
 
-    # Use analytic determinant to keep the metric determinant consistent
-    # with the analytic surface Jacobian.
-    gdet = sqrt_g * sqrt_g
+    gdet = g11 * g22 - g12 * g12
 
     if np.any(gdet <= 0.0):
         raise ValueError("Non-positive surface metric determinant encountered.")
@@ -355,14 +238,7 @@ def build_geometry_cache(
 
             X_face[k, f] = Xf
             face_tangent[k, f] = Xt
-            # Analytic line Jacobian for the current radial projection map:
-            #   J_f = R ||Y x Y_t|| / ||Y||^2
-            face_jacobian[k, f] = radial_projection_face_jacobian(
-                face_id=face_id,
-                rs_face=edge.rs,
-                vertices=element_vertices[k],
-                radius=mesh.radius,
-            )
+            face_jacobian[k, f] = np.linalg.norm(Xt, axis=1)
             face_normal[k, f] = nf
             face_conormal[k, f] = cf
 
