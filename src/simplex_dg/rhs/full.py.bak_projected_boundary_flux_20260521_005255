@@ -6,13 +6,8 @@ import numpy as np
 
 from simplex_dg.geometry import GeometryCache
 from simplex_dg.reference import ReferenceCache
-from simplex_dg.rhs.surface import (
-    SurfaceRHSCache,
-    build_surface_rhs_cache,
-    surface_lift_correction,
-    surface_lift_correction_projected_flux,
-)
-from simplex_dg.rhs.volume import VolumeRHSCache, build_volume_rhs_cache, volume_divergence_split, volume_divergence_conservative
+from simplex_dg.rhs.surface import SurfaceRHSCache, build_surface_rhs_cache, surface_lift_correction
+from simplex_dg.rhs.volume import VolumeRHSCache, build_volume_rhs_cache, volume_divergence_split
 from simplex_dg.trace import TraceCache, pair_face_traces
 
 
@@ -77,7 +72,7 @@ def full_rhs_split(
     if q.shape != expected:
         raise ValueError(f"q must have shape {expected}.")
 
-    div = volume_divergence_conservative(q, cache.volume, use_numba=use_numba)
+    div = volume_divergence_split(q, cache.volume, use_numba=use_numba)
 
     if cache.constant_preserving:
         # The solid-body rotation field on the sphere is analytically
@@ -85,7 +80,7 @@ def full_rhs_split(
         # Dr(alpha)+Ds(beta) is not exactly zero. Subtracting q*div_velocity
         # enforces constant-state preservation for the advective manifold
         # transport operator.
-        div = div #- q * cache.volume.div_velocity
+        div = div - q * cache.volume.div_velocity
 
     traces = pair_face_traces(
         q,
@@ -93,10 +88,8 @@ def full_rhs_split(
         use_numba=use_numba,
     )
 
-    surf = surface_lift_correction_projected_flux(
-        q,
+    surf = surface_lift_correction(
         traces,
-        cache.volume,
         cache.surface,
         use_numba=use_numba,
     )

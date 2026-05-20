@@ -8,7 +8,7 @@ import numpy as np
 from simplex_dg.geometry import GeometryCache
 from simplex_dg.reference import ReferenceCache
 from simplex_dg.reference.basis import vandermonde2d
-from simplex_dg.rhs.volume import VolumeRHSCache, project_to_tangent, solid_body_rotation_velocity
+from simplex_dg.rhs.volume import project_to_tangent, solid_body_rotation_velocity
 from simplex_dg.trace import FaceTraces, TraceCache
 
 
@@ -38,7 +38,6 @@ class SurfaceRHSCache:
     n_face_points: int
 
     lift: np.ndarray
-    face_interp: np.ndarray
     sqrt_g: np.ndarray
 
     face_jacobian: np.ndarray
@@ -134,7 +133,6 @@ def build_surface_rhs_cache(
         n_faces=trace.n_faces,
         n_face_points=trace.n_face_points,
         lift=lift,
-        face_interp=np.asarray(trace.face_interp, dtype=float),
         sqrt_g=np.asarray(geom.sqrt_g, dtype=float),
         face_jacobian=np.asarray(geom.face_jacobian, dtype=float),
         face_velocity=face_velocity,
@@ -162,9 +160,6 @@ def validate_surface_rhs_cache(
 
     if cache.lift.shape != (n_faces, Np, Nf):
         raise ValueError("lift must have shape (3, Np, Nf).")
-
-    if cache.face_interp.shape != (n_faces, Nf, Np):
-        raise ValueError("face_interp must have shape (3, Nf, Np).")
 
     if cache.sqrt_g.shape != (K, Np):
         raise ValueError("sqrt_g must have shape (K, Np).")
@@ -216,132 +211,6 @@ def numerical_flux(
         return 0.5 * un * (qM + qP) - 0.5 * np.abs(un) * (qP - qM)
 
     raise ValueError("Invalid flux_id.")
-
-
-# Reference-face derivatives with respect to the edge parameter t in [0, 1].
-# These match reference.quadrature.reference_edge_nodes and geometry.sphere._face_direction_rs.
-_FACE_DRDT = np.array([-2.0, 0.0, 2.0], dtype=float)
-_FACE_DSDT = np.array([2.0, -2.0, 0.0], dtype=float)
-
-
-def projected_interior_line_flux(
-    q: np.ndarray,
-    volume: VolumeRHSCache,
-    cache: SurfaceRHSCache,
-    out: np.ndarray | None = None,
-) -> np.ndarray:
-    """Compute the projected interior physical line flux F_{n,P}^-.
-
-    The volume derivative differentiates alpha*q and beta*q with SDG
-    derivative matrices. Therefore the compatible boundary term is
-
-        F_{n,P}^- = ds/dt * E P(alpha*q) - dr/dt * E P(beta*q),
-
-    not
-
-        face_jacobian * normal_velocity * E P(q).
-
-    This function intentionally projects the physical volume fluxes
-    alpha*q and beta*q before taking the boundary trace. It does not
-    project the penalty residual p.
-    """
-    q = np.asarray(q, dtype=float)
-
-    expected_vol = (cache.n_elements, cache.n_points)
-
-    if q.shape != expected_vol:
-        raise ValueError(f"q must have shape {expected_vol}.")
-
-    if volume.alpha.shape != expected_vol or volume.beta.shape != expected_vol:
-        raise ValueError("volume.alpha and volume.beta must match q shape.")
-
-    expected_face = (cache.n_elements, cache.n_faces, cache.n_face_points)
-
-    if out is None:
-        line_flux = np.empty(expected_face, dtype=float)
-    else:
-        line_flux = np.asarray(out, dtype=float)
-        if line_flux.shape != expected_face:
-            raise ValueError("out has wrong shape.")
-
-    alpha_q = volume.alpha * q
-    beta_q = volume.beta * q
-
-    for f in range(cache.n_faces):
-        alpha_face = alpha_q @ cache.face_interp[f].T
-        beta_face = beta_q @ cache.face_interp[f].T
-
-        drdt = _FACE_DRDT[f]
-        dsdt = _FACE_DSDT[f]
-
-        line_flux[:, f, :] = dsdt * alpha_face - drdt * beta_face
-
-    return line_flux
-
-
-def surface_lift_correction_projected_flux(
-    q: np.ndarray,
-    traces: FaceTraces,
-    volume: VolumeRHSCache,
-    cache: SurfaceRHSCache,
-    out: np.ndarray | None = None,
-    use_numba: bool | None = None,
-) -> np.ndarray:
-    """Surface correction consistent with projected SBP.
-
-    Uses
-
-        p = F_{n,P}^- - F_n^*(q_P^-, q_P^+),
-
-    where q_P^\pm are already supplied through FaceTraces and
-    F_{n,P}^- is obtained by projecting alpha*q and beta*q to the face.
-
-    The projector is not applied to p.
-    """
-    qM = np.asarray(traces.qM, dtype=float)
-    qP = np.asarray(traces.qP, dtype=float)
-
-    expected_face = (cache.n_elements, cache.n_faces, cache.n_face_points)
-    expected_vol = (cache.n_elements, cache.n_points)
-
-    if qM.shape != expected_face or qP.shape != expected_face:
-        raise ValueError(f"qM and qP must have shape {expected_face}.")
-
-    if out is None:
-        surface = np.empty(expected_vol, dtype=float)
-    else:
-        surface = np.asarray(out, dtype=float)
-        if surface.shape != expected_vol:
-            raise ValueError("out has wrong shape.")
-
-    # F_{n,P}^- as a physical line flux, including the reference-face scaling.
-    line_flux_m = projected_interior_line_flux(
-        q=q,
-        volume=volume,
-        cache=cache,
-    )
-
-    # Numerical flux is also represented as a physical line flux.
-    line_velocity = cache.face_jacobian * cache.normal_velocity
-
-    flux_star_line = numerical_flux(
-        qM=qM,
-        qP=qP,
-        normal_velocity=line_velocity,
-        flux_id=cache.flux_id,
-    )
-
-    correction = line_flux_m - flux_star_line
-
-    surface.fill(0.0)
-
-    for f in range(cache.n_faces):
-        surface += correction[:, f, :] @ cache.lift[f].T
-
-    surface /= cache.sqrt_g
-
-    return surface
-
 
 
 if _NUMBA_AVAILABLE:
