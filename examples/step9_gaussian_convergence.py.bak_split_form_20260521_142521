@@ -38,7 +38,6 @@ def run_one_level(
     sigma: float,
     radius: float,
     flux_type: str,
-    volume_form: str,
     use_numba: bool,
     history_every: int,
 ) -> tuple[ConvergenceRow, list[dict[str, float]]]:
@@ -58,7 +57,6 @@ def run_one_level(
         omega=omega,
         flux_type=flux_type,
         constant_preserving=True,
-        volume_form=volume_form,
     )
 
     q0 = gaussian_on_sphere(
@@ -270,22 +268,15 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Gaussian solid-body advection convergence runner.")
 
     parser.add_argument("--levels", nargs="+", type=int, default=[0, 1, 2])
-    parser.add_argument("--order", type=int, default=4)
+    parser.add_argument("--order", type=int, default=3)
     parser.add_argument("--table", type=str, default="table1")
-    parser.add_argument("--cfl", type=float, default=1.0)
+    parser.add_argument("--cfl", type=float, default=0.01)
     parser.add_argument("--tf", type=float, default=1.0)
     parser.add_argument("--sigma", type=float, default=0.35)
     parser.add_argument("--radius", type=float, default=1.0)
     parser.add_argument("--flux", type=str, default="upwind", choices=["upwind", "central", "lf"])
-    parser.add_argument(
-        "--form",
-        type=str,
-        default="conservative",
-        choices=["conservative", "split"],
-        help="Volume/surface pairing: conservative or split.",
-    )
     parser.add_argument("--no-numba", action="store_true")
-    parser.add_argument("--history-every", type=int, default=1)
+    parser.add_argument("--history-every", type=int, default=10)
     parser.add_argument("--output", type=str, default="outputs/convergence/gaussian_sphere_convergence.csv")
     parser.add_argument("--plot-dir", type=str, default="outputs/convergence/plots")
     parser.add_argument("--no-plots", action="store_true")
@@ -308,7 +299,6 @@ def main() -> None:
     print(f"tf            : {args.tf}")
     print(f"sigma         : {args.sigma}")
     print(f"flux          : {args.flux}")
-    print(f"form          : {args.form}")
     print(f"history_every : {args.history_every}")
     print()
 
@@ -326,7 +316,6 @@ def main() -> None:
             sigma=args.sigma,
             radius=args.radius,
             flux_type=args.flux,
-            volume_form=args.form,
             use_numba=not args.no_numba,
             history_every=args.history_every,
         )
