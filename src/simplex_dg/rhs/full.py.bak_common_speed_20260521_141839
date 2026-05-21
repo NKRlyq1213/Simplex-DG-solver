@@ -11,7 +11,6 @@ from simplex_dg.rhs.surface import (
     build_surface_rhs_cache,
     surface_lift_correction,
     surface_lift_correction_projected_flux,
-    surface_lift_correction_split_projected_flux,
 )
 from simplex_dg.rhs.volume import VolumeRHSCache, build_volume_rhs_cache, volume_divergence_split, volume_divergence_conservative
 from simplex_dg.trace import TraceCache, pair_face_traces
@@ -22,8 +21,6 @@ class FullRHSCache:
     volume: VolumeRHSCache
     surface: SurfaceRHSCache
     trace: TraceCache
-    constant_preserving: bool
-    volume_form: str
 
 
 def build_full_rhs_cache(
@@ -35,19 +32,8 @@ def build_full_rhs_cache(
     omega: np.ndarray | tuple[float, float, float] = (0.0, 0.0, 1.0),
     flux_type: str = "upwind",
     project_velocity: bool = True,
-    constant_preserving: bool = True,
-    volume_form: str = "conservative",
     validate: bool = True,
 ) -> FullRHSCache:
-    volume_form = volume_form.lower().strip()
-
-    if volume_form in ("conservative", "cons", "divergence"):
-        volume_form = "conservative"
-    elif volume_form in ("split", "split_form", "skew"):
-        volume_form = "split"
-    else:
-        raise ValueError("volume_form must be 'conservative' or 'split'.")
-
     volume = build_volume_rhs_cache(
         ref=ref,
         geom=geom,
@@ -72,8 +58,6 @@ def build_full_rhs_cache(
         volume=volume,
         surface=surface,
         trace=trace,
-        constant_preserving=bool(constant_preserving),
-        volume_form=volume_form,
     )
 
 
@@ -90,18 +74,7 @@ def full_rhs_split(
     if q.shape != expected:
         raise ValueError(f"q must have shape {expected}.")
 
-    if cache.volume_form == "split":
-        div = volume_divergence_split(q, cache.volume, use_numba=use_numba)
-    elif cache.volume_form == "conservative":
-        div = volume_divergence_conservative(q, cache.volume, use_numba=use_numba)
-    else:
-        raise ValueError("cache.volume_form must be 'conservative' or 'split'.")
-
-    if cache.constant_preserving:
-        # Conservative form should not subtract q * div_velocity here.
-        # Any GCL correction must be built into the metric/flux construction
-        # rather than added as a non-conservative local source.
-        pass
+    div = volume_divergence_conservative(q, cache.volume, use_numba=use_numba)
 
     traces = pair_face_traces(
         q,
@@ -109,26 +82,13 @@ def full_rhs_split(
         use_numba=use_numba,
     )
 
-    if cache.volume_form == "split":
-        surf = surface_lift_correction_split_projected_flux(
-            q,
-            traces,
-            cache.volume,
-            cache.surface,
-            cache.trace,
-            use_numba=use_numba,
-        )
-    elif cache.volume_form == "conservative":
-        surf = surface_lift_correction_projected_flux(
-            q,
-            traces,
-            cache.volume,
-            cache.surface,
-            cache.trace,
-            use_numba=use_numba,
-        )
-    else:
-        raise ValueError("cache.volume_form must be 'conservative' or 'split'.")
+    surf = surface_lift_correction_projected_flux(
+        q,
+        traces,
+        cache.volume,
+        cache.surface,
+        use_numba=use_numba,
+    )
 
     if out is None:
         rhs = np.empty_like(q)
