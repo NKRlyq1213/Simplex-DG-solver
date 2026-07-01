@@ -5,26 +5,36 @@ import numpy as np
 
 from simplex_dg.diagnostics import (
     ConvergenceRow,
-    estimate_log2_rates,
+    estimate_convergence_rates,
     format_convergence_table,
     rows_to_dicts_with_rates,
     write_convergence_csv,
 )
 
 
-def test_estimate_log2_rates():
+def test_estimate_convergence_rates():
     values = [4.0, 1.0, 0.25]
-    rates = estimate_log2_rates(values)
+    hmins = [1.0, 0.5, 0.25]
+    rates = estimate_convergence_rates(values, hmins)
 
     assert rates[0] is None
     assert np.allclose(rates[1], 2.0)
     assert np.allclose(rates[2], 2.0)
 
 
+def test_estimate_convergence_rates_uses_actual_hmin_ratio():
+    values = [0.4, 0.1]
+    hmins = [1.0, 1.0 / 3.0]
+    rates = estimate_convergence_rates(values, hmins)
+
+    assert rates[0] is None
+    assert np.allclose(rates[1], np.log(4.0) / np.log(3.0))
+
+
 def test_convergence_rows_to_dicts_with_rates():
     rows = [
         ConvergenceRow(
-            level=0,
+            ndivs=1,
             order=3,
             n_elements=8,
             n_points_per_element=18,
@@ -40,15 +50,15 @@ def test_convergence_rows_to_dicts_with_rates():
             l2_norm_drift=0.0,
         ),
         ConvergenceRow(
-            level=1,
+            ndivs=3,
             order=3,
-            n_elements=32,
+            n_elements=72,
             n_points_per_element=18,
-            total_dofs=576,
+            total_dofs=1296,
             dt=0.05,
             tf=1.0,
             nsteps=20,
-            hmin=0.5,
+            hmin=1.0 / 3.0,
             l2_error=0.1,
             relative_l2_error=0.05,
             linf_error=0.2,
@@ -60,12 +70,12 @@ def test_convergence_rows_to_dicts_with_rates():
     dicts = rows_to_dicts_with_rates(rows)
 
     assert dicts[0]["l2_rate"] == ""
-    assert np.allclose(dicts[1]["l2_rate"], 2.0)
+    assert np.allclose(dicts[1]["l2_rate"], np.log(4.0) / np.log(3.0))
 
 
 def test_write_convergence_csv():
     row = ConvergenceRow(
-        level=0,
+        ndivs=1,
         order=3,
         n_elements=8,
         n_points_per_element=18,
@@ -93,7 +103,7 @@ def test_write_convergence_csv():
 
 def test_format_convergence_table_nonempty():
     row = ConvergenceRow(
-        level=0,
+        ndivs=1,
         order=3,
         n_elements=8,
         n_points_per_element=18,
@@ -111,5 +121,5 @@ def test_format_convergence_table_nonempty():
 
     table = format_convergence_table([row])
 
-    assert "level" in table
+    assert "ndivs" in table
     assert "L2 err" in table

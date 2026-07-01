@@ -7,7 +7,7 @@ from simplex_dg.diagnostics.errors import (
 )
 from simplex_dg.diagnostics.convergence import (
     ConvergenceRow,
-    estimate_log2_rates,
+    estimate_convergence_rates,
     format_convergence_table,
     rows_to_dicts_with_rates,
     write_convergence_csv,
@@ -20,7 +20,7 @@ __all__ = [
     "linf_error",
     "error_report",
     "ConvergenceRow",
-    "estimate_log2_rates",
+    "estimate_convergence_rates",
     "rows_to_dicts_with_rates",
     "format_convergence_table",
     "write_convergence_csv",

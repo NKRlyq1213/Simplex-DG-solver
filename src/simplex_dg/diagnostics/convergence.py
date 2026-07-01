@@ -9,7 +9,7 @@ import numpy as np
 
 @dataclass(frozen=True)
 class ConvergenceRow:
-    level: int
+    ndivs: int
     order: int
     n_elements: int
     n_points_per_element: int
@@ -25,7 +25,10 @@ class ConvergenceRow:
     l2_norm_drift: float
 
 
-def estimate_log2_rates(values: list[float]) -> list[float | None]:
+def estimate_convergence_rates(values: list[float], hmins: list[float]) -> list[float | None]:
+    if len(values) != len(hmins):
+        raise ValueError("values and hmins must have the same length.")
+
     if len(values) == 0:
         return []
 
@@ -34,19 +37,22 @@ def estimate_log2_rates(values: list[float]) -> list[float | None]:
     for i in range(1, len(values)):
         prev = float(values[i - 1])
         curr = float(values[i])
+        h_prev = float(hmins[i - 1])
+        h_curr = float(hmins[i])
 
-        if prev <= 0.0 or curr <= 0.0:
+        if prev <= 0.0 or curr <= 0.0 or h_prev <= 0.0 or h_curr <= 0.0 or np.isclose(h_prev, h_curr):
             rates.append(None)
         else:
-            rates.append(float(np.log(prev / curr) / np.log(2.0)))
+            rates.append(float(np.log(prev / curr) / np.log(h_prev / h_curr)))
 
     return rates
 
 
 def rows_to_dicts_with_rates(rows: list[ConvergenceRow]) -> list[dict[str, float | int | str]]:
-    l2_rates = estimate_log2_rates([r.l2_error for r in rows])
-    rel_rates = estimate_log2_rates([r.relative_l2_error for r in rows])
-    linf_rates = estimate_log2_rates([r.linf_error for r in rows])
+    hmins = [r.hmin for r in rows]
+    l2_rates = estimate_convergence_rates([r.l2_error for r in rows], hmins)
+    rel_rates = estimate_convergence_rates([r.relative_l2_error for r in rows], hmins)
+    linf_rates = estimate_convergence_rates([r.linf_error for r in rows], hmins)
 
     out: list[dict[str, float | int | str]] = []
 
@@ -81,7 +87,7 @@ def format_convergence_table(rows: list[ConvergenceRow]) -> str:
     dicts = rows_to_dicts_with_rates(rows)
 
     headers = [
-        "level",
+        "ndivs",
         "K",
         "DOFs",
         "dt",
@@ -108,7 +114,7 @@ def format_convergence_table(rows: list[ConvergenceRow]) -> str:
         rate_s = "" if rate == "" else f"{float(rate):.3f}"
 
         lines.append(
-            f"{int(d['level']):5d} "
+            f"{int(d['ndivs']):5d} "
             f"{int(d['n_elements']):6d} "
             f"{int(d['total_dofs']):8d} "
             f"{float(d['dt']):11.4e} "

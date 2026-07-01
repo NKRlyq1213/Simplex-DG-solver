@@ -2,17 +2,26 @@ from __future__ import annotations
 
 import argparse
 import ast
+from dataclasses import dataclass
 import operator
 from pathlib import Path
+import sys
 import time
 
 import matplotlib.pyplot as plt
 import numpy as np
 
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
 from simplex_dg.diagnostics import (
     ConvergenceRow,
     error_report,
     format_convergence_table,
+    rows_to_dicts_with_rates,
     write_convergence_csv,
 )
 from simplex_dg.geometry import build_geometry_cache
@@ -43,6 +52,27 @@ _ALLOWED_UNARYOPS = {
     ast.UAdd: operator.pos,
     ast.USub: operator.neg,
 }
+
+_PLOT_TIME_UNIT_SECONDS = {
+    "second": 1.0,
+    "minute": 60.0,
+    "hour": 3600.0,
+    "day": 86400.0,
+}
+
+_PLOT_TIME_UNIT_LABELS = {
+    "second": "time (seconds)",
+    "minute": "time (minutes)",
+    "hour": "time (hours)",
+    "day": "time (days)",
+}
+
+
+@dataclass(frozen=True)
+class PlotTimeAxis:
+    unit: str
+    scale: float
+    xlabel: str
 
 
 def parse_float_expr(value: str) -> float:
@@ -93,9 +123,27 @@ def rotation_axis_from_alpha0(alpha0: float) -> tuple[float, float, float]:
     )
 
 
-def run_one_level(
+def validate_ndivs(ndivs: list[int]) -> list[int]:
+    if not ndivs:
+        raise ValueError("ndivs must not be empty.")
+
+    out = [int(ndiv) for ndiv in ndivs]
+
+    if any(ndiv < 1 for ndiv in out):
+        raise ValueError("ndivs must contain only positive integers.")
+
+    if len(set(out)) != len(out):
+        raise ValueError("ndivs must be unique.")
+
+    if any(curr <= prev for prev, curr in zip(out, out[1:])):
+        raise ValueError("ndivs must be strictly increasing.")
+
+    return out
+
+
+def run_one_ndiv(
     *,
-    level: int,
+    ndivs: int,
     order: int,
     table: str,
     cfl: float,
@@ -116,7 +164,7 @@ def run_one_level(
     center0 = (radius, 0.0, 0.0)
 
     ref = build_reference_cache(order=order, table=table)
-    mesh = build_octa_sphere_mesh(level=level, radius=radius)
+    mesh = build_octa_sphere_mesh(ndivs=ndivs, radius=radius)
     conn = build_connectivity_cache_from_mesh(mesh)
     geom = build_geometry_cache(mesh, ref)
     trace = build_trace_cache(ref, conn)
@@ -188,7 +236,7 @@ def run_one_level(
         signed_relative_energy_error = (energy_t - energy0_ref) / energy0_denom
 
         return {
-            "level": float(level),
+            "ndivs": float(ndivs),
             "t": float(t),
             "l2_error": rep.l2_error,
             "relative_l2_error": rep.relative_l2_error,
@@ -231,7 +279,7 @@ def run_one_level(
     l2f = manifold_l2_norm(result.q, ref, geom)
 
     row = ConvergenceRow(
-        level=level,
+        ndivs=ndivs,
         order=order,
         n_elements=mesh.elements.shape[0],
         n_points_per_element=ref.rs.shape[0],
@@ -250,48 +298,62 @@ def run_one_level(
     return row, result.history
 
 
-def observed_rates(errors: list[float]) -> list[float | None]:
-    if not errors:
-        return []
+def history_time_span(histories: list[list[dict[str, float]]]) -> float:
+    tmin: float | None = None
+    tmax: float | None = None
 
-    rates: list[float | None] = [None]
+    for hist in histories:
+        if not hist:
+            continue
 
-    for i in range(1, len(errors)):
-        e0 = float(errors[i - 1])
-        e1 = float(errors[i])
+        times = [float(entry["t"]) for entry in hist]
 
-        if e0 <= 0.0 or e1 <= 0.0:
-            rates.append(None)
+        if not times:
+            continue
+
+        hist_min = min(times)
+        hist_max = max(times)
+
+        tmin = hist_min if tmin is None else min(tmin, hist_min)
+        tmax = hist_max if tmax is None else max(tmax, hist_max)
+
+    if tmin is None or tmax is None:
+        return 0.0
+
+    return max(0.0, tmax - tmin)
+
+
+def resolve_plot_time_axis(
+    *,
+    span_seconds: float,
+    plot_time_unit: str = "auto",
+) -> PlotTimeAxis:
+    if plot_time_unit == "auto":
+        if span_seconds > 86400.0:
+            unit = "day"
+        elif span_seconds > 7200.0:
+            unit = "hour"
+        elif span_seconds > 600.0:
+            unit = "minute"
         else:
-            rates.append(float(np.log(e0 / e1) / np.log(2.0)))
+            unit = "second"
+    else:
+        unit = plot_time_unit
 
-    return rates
+    return PlotTimeAxis(
+        unit=unit,
+        scale=_PLOT_TIME_UNIT_SECONDS[unit],
+        xlabel=_PLOT_TIME_UNIT_LABELS[unit],
+    )
 
 
-def plot_error_time_history(
-    histories: dict[int, list[dict[str, float]]],
-    output_path: Path,
-    quantity: str = "relative_l2_error",
-) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    fig, ax = plt.subplots(figsize=(8.0, 5.0))
-
-    for level, hist in sorted(histories.items()):
-        t = np.array([entry["t"] for entry in hist], dtype=float) / float(time_scale)
-        y = np.array([entry[quantity] for entry in hist], dtype=float)
-
-        ax.semilogy(t, y, linewidth=1.5, label=f"level {level}")
-
-    ax.set_xlabel("time")
-    ax.set_ylabel(quantity.replace("_", " "))
-    ax.set_title("Gaussian advection error history")
-    ax.grid(True, which="both", linestyle="--", linewidth=0.5)
-    ax.legend()
-
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=200)
-    plt.close(fig)
+def resolve_history_time_axis(
+    histories: list[list[dict[str, float]]],
+    *,
+    plot_time_unit: str = "auto",
+) -> PlotTimeAxis:
+    span_seconds = history_time_span(histories)
+    return resolve_plot_time_axis(span_seconds=span_seconds, plot_time_unit=plot_time_unit)
 
 
 
@@ -303,8 +365,7 @@ def plot_time_history_quantity(
     ylabel: str,
     title: str,
     semilogy: bool = True,
-    time_scale: float = 1.0,
-    xlabel: str = "time",
+    plot_time_unit: str = "auto",
 ) -> None:
     """Plot a monitored scalar quantity over time.
 
@@ -313,22 +374,23 @@ def plot_time_history_quantity(
         signed relative energy error ???????
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    time_axis = resolve_history_time_axis(list(histories.values()), plot_time_unit=plot_time_unit)
 
     fig, ax = plt.subplots(figsize=(8.0, 5.0))
 
-    for level, hist in sorted(histories.items()):
-        t = np.array([entry["t"] for entry in hist], dtype=float)
+    for ndivs, hist in sorted(histories.items()):
+        t = np.array([entry["t"] for entry in hist], dtype=float) / time_axis.scale
         y = np.array([entry[quantity] for entry in hist], dtype=float)
 
         if semilogy:
             # Avoid log(0). Exact zero is shown near machine tiny.
             # ?? log(0)???? 0 ??????? machine tiny ???
             y_plot = np.maximum(y, np.finfo(float).tiny)
-            ax.semilogy(t, y_plot, linewidth=1.5, label=f"level {level}")
+            ax.semilogy(t, y_plot, linewidth=1.5, label=f"ndiv {ndivs}")
         else:
-            ax.plot(t, y, linewidth=1.5, label=f"level {level}")
+            ax.plot(t, y, linewidth=1.5, label=f"ndiv {ndivs}")
 
-    ax.set_xlabel(xlabel)
+    ax.set_xlabel(time_axis.xlabel)
     ax.set_ylabel(ylabel)
     ax.set_title(title)
     ax.grid(True, which="both", linestyle="--", linewidth=0.5)
@@ -356,38 +418,38 @@ def plot_time_history_quantity_each_level(
     ylabel: str,
     title_prefix: str,
     semilogy: bool = True,
-    time_scale: float = 1.0,
-    xlabel: str = "time",
+    plot_time_unit: str = "auto",
 ) -> list[Path]:
-    """Plot one time-history figure per refinement level.
+    """Plot one time-history figure per subdivision count.
 
     ?????
-        ??? energy error history ?? level ??????
+        ??? energy error history ?? ndiv ??????
         ??????????????
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
     output_paths: list[Path] = []
 
-    for level, hist in sorted(histories.items()):
-        output_path = output_dir / f"{filename_prefix}_level{level}.png"
+    for ndivs, hist in sorted(histories.items()):
+        output_path = output_dir / f"{filename_prefix}_ndiv{ndivs}.png"
+        time_axis = resolve_history_time_axis([hist], plot_time_unit=plot_time_unit)
 
-        t = np.array([entry["t"] for entry in hist], dtype=float) / float(time_scale)
+        t = np.array([entry["t"] for entry in hist], dtype=float) / time_axis.scale
         y = np.array([entry[quantity] for entry in hist], dtype=float)
 
         fig, ax = plt.subplots(figsize=(8.0, 5.0))
 
         if semilogy:
             y_plot = np.maximum(y, np.finfo(float).tiny)
-            ax.semilogy(t, y_plot, linewidth=1.5, label=f"level {level}")
+            ax.semilogy(t, y_plot, linewidth=1.5, label=f"ndiv {ndivs}")
             ax.set_ylim(1.0e-18, 1.0e1)
         else:
-            ax.plot(t, y, linewidth=1.5, label=f"level {level}")
+            ax.plot(t, y, linewidth=1.5, label=f"ndiv {ndivs}")
             ax.axhline(0.0, linestyle="--", linewidth=1.0)
 
-        ax.set_xlabel(xlabel)
+        ax.set_xlabel(time_axis.xlabel)
         ax.set_ylabel(ylabel)
-        ax.set_title(f"{title_prefix}, level {level}")
+        ax.set_title(f"{title_prefix}, ndiv {ndivs}")
         ax.grid(True, which="both", linestyle="--", linewidth=0.5)
         ax.legend()
 
@@ -438,26 +500,21 @@ def plot_observed_order(
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    levels = np.array([row.level for row in rows], dtype=int)
-    l2_errors = [row.l2_error for row in rows]
-    rel_errors = [row.relative_l2_error for row in rows]
-    linf_errors = [row.linf_error for row in rows]
-
-    l2_rates = observed_rates(l2_errors)
-    #rel_rates = observed_rates(rel_errors)
-    linf_rates = observed_rates(linf_errors)
+    row_dicts = rows_to_dicts_with_rates(rows)
+    ndivs = np.array([int(row["ndivs"]) for row in row_dicts], dtype=int)
+    l2_rates = [None if row["l2_rate"] == "" else float(row["l2_rate"]) for row in row_dicts]
+    linf_rates = [None if row["linf_rate"] == "" else float(row["linf_rate"]) for row in row_dicts]
 
     fig, ax = plt.subplots(figsize=(8.0, 5.0))
 
-    if len(levels) >= 2:
-        x = levels[1:]
+    if len(ndivs) >= 2:
+        x = ndivs[1:]
         ax.plot(x, [r for r in l2_rates[1:]], marker="o", linewidth=1.5, label="L2 observed order")
-        #ax.plot(x, [r for r in rel_rates[1:]], marker="s", linewidth=1.5, label="relative L2 observed order")
         ax.plot(x, [r for r in linf_rates[1:]], marker="^", linewidth=1.5, label="Linf observed order")
 
         ax.axhline(rows[0].order, linestyle="--", linewidth=1.2, label=f"target order {rows[0].order}")
 
-    ax.set_xlabel("level")
+    ax.set_xlabel("ndivs")
     ax.set_ylabel("observed order")
     ax.set_title("Observed convergence order")
     ax.grid(True, linestyle="--", linewidth=0.5)
@@ -468,27 +525,31 @@ def plot_observed_order(
     plt.close(fig)
 
 
-def parse_args() -> argparse.Namespace:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Gaussian solid-body advection convergence runner.")
 
-    parser.add_argument("--levels", nargs="+", type=int, default=[0, 1, 2])
-    parser.add_argument("--order", type=int, default=4)
-    parser.add_argument("--table", type=str, default="table1")
-    parser.add_argument("--cfl", type=float, default=1.0)
-    parser.add_argument("--tf", type=float, default=1.0)
-    parser.add_argument(
+    run_group = parser.add_argument_group("mesh/run control")
+    run_group.add_argument("--ndivs", nargs="+", type=int, default=[1, 2, 4, 8])
+    run_group.add_argument("--order", type=int, default=4)
+    run_group.add_argument("--table", type=str, default="table1")
+    run_group.add_argument("--cfl", type=float, default=1.0)
+    run_group.add_argument("--tf", type=float, default=1.0)
+    run_group.add_argument("--history-every", type=int, default=1)
+
+    gaussian_group = parser.add_argument_group("Gaussian/physics parameters")
+    gaussian_group.add_argument(
         "--sigma",
         type=parse_float_expr,
         default=0.35,
         help="Gaussian angular width in radians. Physical width is R*sigma unless --sigma-physical is provided.",
     )
-    parser.add_argument(
+    gaussian_group.add_argument(
         "--sigma-physical",
         type=parse_float_expr,
         default=None,
         help="Override Gaussian physical arc-length width. If omitted, sigma_physical = R*sigma.",
     )
-    parser.add_argument(
+    gaussian_group.add_argument(
         "--amplitude",
         "--height",
         dest="amplitude",
@@ -496,20 +557,20 @@ def parse_args() -> argparse.Namespace:
         default=1.0,
         help="Gaussian peak height/amplitude.",
     )
-    parser.add_argument("--radius", "--R", dest="radius", type=parse_float_expr, default=1.0)
-    parser.add_argument(
+    gaussian_group.add_argument("--radius", "--R", dest="radius", type=parse_float_expr, default=1.0)
+    gaussian_group.add_argument(
         "--alpha0",
         type=parse_float_expr,
         default=-np.pi / 4.0,
         help="Rotation-axis tilt angle. alpha0=0 gives z-axis rotation, so center (R,0,0) moves on the equator.",
     )
-    parser.add_argument(
+    gaussian_group.add_argument(
         "--u0",
         type=parse_float_expr,
         default=1.0,
         help="Angular speed multiplier. omega = u0 * axis(alpha0).",
     )
-    parser.add_argument(
+    gaussian_group.add_argument(
         "--lf-alpha",
         "--lf-lambda",
         dest="lf_alpha",
@@ -517,33 +578,43 @@ def parse_args() -> argparse.Namespace:
         default=1.0,
         help="Lax-Friedrichs penalty multiplier: F*=0.5*a(q-+q+) - 0.5*lf_alpha*|a|*(q+-q-).",
     )
-    parser.add_argument("--flux", type=str, default="upwind", choices=["upwind", "central", "lf"])
-    parser.add_argument(
+
+    numerics_group = parser.add_argument_group("flux/form/backend")
+    numerics_group.add_argument("--flux", type=str, default="upwind", choices=["upwind", "central", "lf"])
+    numerics_group.add_argument(
         "--form",
         type=str,
         default="conservative",
         choices=["conservative", "split"],
         help="Volume/surface pairing: conservative or split.",
     )
-    parser.add_argument("--no-numba", action="store_true")
-    parser.add_argument("--history-every", type=int, default=1)
-    parser.add_argument(
-        "--plot-time-scale",
-        type=parse_float_expr,
-        default=1.0,
-        help="Plot-time scaling. The plotted x-axis is t / plot_time_scale. Use 86400 if t is measured in seconds.",
-    )
-    parser.add_argument(
-        "--plot-time-label",
-        type=str,
-        default="time (days)",
-        help="Label for the plotted time axis.",
-    )
-    parser.add_argument("--output", type=str, default="outputs/convergence/gaussian_sphere_convergence.csv")
-    parser.add_argument("--plot-dir", type=str, default="outputs/convergence/plots")
-    parser.add_argument("--no-plots", action="store_true")
+    numerics_group.add_argument("--no-numba", action="store_true")
 
-    return parser.parse_args()
+    output_group = parser.add_argument_group("outputs/plots")
+    output_group.add_argument("--output", type=str, default="outputs/convergence/gaussian_sphere_convergence.csv")
+    output_group.add_argument("--plot-dir", type=str, default="outputs/convergence/plots")
+    output_group.add_argument("--no-plots", action="store_true")
+    output_group.add_argument(
+        "--plot-time-unit",
+        type=str,
+        default="auto",
+        choices=["auto", "second", "minute", "hour", "day"],
+        help="Time unit for time-history plots. Default auto-selects from the plotted time span.",
+    )
+
+    return parser
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    try:
+        args.ndivs = validate_ndivs(args.ndivs)
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    return args
 
 
 def main() -> None:
@@ -560,7 +631,7 @@ def main() -> None:
 
     print("Gaussian convergence run")
     print("------------------------")
-    print(f"levels        : {args.levels}")
+    print(f"ndivs         : {args.ndivs}")
     print(f"order         : {args.order}")
     print(f"table         : {args.table}")
     print(f"cfl           : {args.cfl}")
@@ -575,15 +646,16 @@ def main() -> None:
     print(f"flux          : {args.flux}")
     print(f"form          : {args.form}")
     print(f"history_every : {args.history_every}")
+    print(f"plot_time_unit: {args.plot_time_unit}")
     print()
 
     t0 = time.perf_counter()
 
-    for level in args.levels:
+    for ndivs in args.ndivs:
         start = time.perf_counter()
 
-        row, history = run_one_level(
-            level=level,
+        row, history = run_one_ndiv(
+            ndivs=ndivs,
             order=args.order,
             table=args.table,
             cfl=args.cfl,
@@ -601,12 +673,12 @@ def main() -> None:
         )
 
         rows.append(row)
-        histories[level] = history
+        histories[ndivs] = history
 
         elapsed = time.perf_counter() - start
 
         print(
-            f"level={level}, K={row.n_elements}, DOFs={row.total_dofs}, "
+            f"ndivs={ndivs}, K={row.n_elements}, DOFs={row.total_dofs}, "
             f"L2={row.l2_error:.6e}, rel={row.relative_l2_error:.6e}, "
             f"Linf={row.linf_error:.6e}, mass ref drift={row.mass_drift:+.6e}, "
             f"time={elapsed:.2f}s"
@@ -639,8 +711,7 @@ def main() -> None:
             ylabel="relative L2 error",
             title="Gaussian advection relative L2 error history",
             semilogy=True,
-            time_scale=args.plot_time_scale,
-            xlabel=args.plot_time_label,
+            plot_time_unit=args.plot_time_unit,
         )
 
         plot_time_history_quantity(
@@ -650,8 +721,7 @@ def main() -> None:
             ylabel="relative mass error",
             title="Relative mass error history",
             semilogy=True,
-            time_scale=args.plot_time_scale,
-            xlabel=args.plot_time_label,
+            plot_time_unit=args.plot_time_unit,
         )
 
         plot_time_history_quantity(
@@ -661,8 +731,7 @@ def main() -> None:
             ylabel="relative energy error",
             title="Relative energy error history",
             semilogy=True,
-            time_scale=args.plot_time_scale,
-            xlabel=args.plot_time_label,
+            plot_time_unit=args.plot_time_unit,
         )
 
         signed_energy_level_plots = plot_time_history_quantity_each_level(
@@ -673,8 +742,7 @@ def main() -> None:
             ylabel="signed relative energy error",
             title_prefix="Signed relative energy error history",
             semilogy=False,
-            time_scale=args.plot_time_scale,
-            xlabel=args.plot_time_label,
+            plot_time_unit=args.plot_time_unit,
         )
 
         plot_time_history_quantity(
@@ -684,8 +752,7 @@ def main() -> None:
             ylabel="signed relative energy error",
             title="Signed relative energy error history",
             semilogy=False,
-            time_scale=args.plot_time_scale,
-            xlabel=args.plot_time_label,
+            plot_time_unit=args.plot_time_unit,
         )
 
         plot_error_convergence(

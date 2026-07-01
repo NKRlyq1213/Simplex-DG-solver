@@ -18,9 +18,9 @@ from simplex_dg.time import (
 from simplex_dg.trace import build_trace_cache
 
 
-def _build_full_case(level=1, order=3, flux_type="upwind", zero_velocity=False):
+def _build_full_case(ndivs=2, order=3, flux_type="upwind", zero_velocity=False):
     ref = build_reference_cache(order=order, table="table1")
-    mesh = build_octa_sphere_mesh(level=level, radius=1.0)
+    mesh = build_octa_sphere_mesh(ndivs=ndivs, radius=1.0)
     conn = build_connectivity_cache_from_mesh(mesh)
     geom = build_geometry_cache(mesh, ref)
     trace = build_trace_cache(ref, conn)
@@ -52,7 +52,7 @@ def test_cfl_dt_positive():
 
 
 def test_face_lengths_positive():
-    mesh, ref, geom, trace, full = _build_full_case(level=1, order=3)
+    mesh, ref, geom, trace, full = _build_full_case(ndivs=2, order=3)
 
     lengths = face_lengths_from_geometry(ref, geom)
 
@@ -62,7 +62,7 @@ def test_face_lengths_positive():
 
 
 def test_cfl_dt_from_geometry_positive():
-    mesh, ref, geom, trace, full = _build_full_case(level=1, order=3)
+    mesh, ref, geom, trace, full = _build_full_case(ndivs=2, order=3)
 
     dt = cfl_dt_from_geometry(ref, geom, max_speed=full.volume.max_speed, cfl=0.1)
 
@@ -98,7 +98,7 @@ def test_lsrk54_step_shape():
 
 
 def test_manifold_integral_and_l2_are_finite():
-    mesh, ref, geom, trace, full = _build_full_case(level=1, order=3)
+    mesh, ref, geom, trace, full = _build_full_case(ndivs=2, order=3)
 
     q = geom.X[:, :, 0] + 0.25 * geom.X[:, :, 1]
 
@@ -111,7 +111,7 @@ def test_manifold_integral_and_l2_are_finite():
 
 
 def test_zero_velocity_integration_preserves_state():
-    mesh, ref, geom, trace, full = _build_full_case(level=1, order=3, zero_velocity=True)
+    mesh, ref, geom, trace, full = _build_full_case(ndivs=2, order=3, zero_velocity=True)
 
     rng = np.random.default_rng(1234)
     q0 = rng.normal(size=(mesh.elements.shape[0], ref.rs.shape[0]))
@@ -125,7 +125,7 @@ def test_zero_velocity_integration_preserves_state():
 
 
 def test_short_full_rhs_run_is_finite():
-    mesh, ref, geom, trace, full = _build_full_case(level=1, order=3)
+    mesh, ref, geom, trace, full = _build_full_case(ndivs=2, order=3)
 
     q0 = geom.X[:, :, 0] + 0.25 * geom.X[:, :, 1] - 0.5 * geom.X[:, :, 2]
 

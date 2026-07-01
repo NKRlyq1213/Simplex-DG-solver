@@ -25,7 +25,7 @@ def main() -> None:
     print()
 
     ref = build_reference_cache(order=4, table="table1")
-    mesh = build_octa_sphere_mesh(level=2, radius=1.0)
+    mesh = build_octa_sphere_mesh(ndivs=4, radius=1.0)
     geom = build_geometry_cache(mesh, ref)
     rhs_cache = build_volume_rhs_cache(ref, geom, omega=(0.0, 0.0, 1.0))
 

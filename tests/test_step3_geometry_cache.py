@@ -5,16 +5,16 @@ from simplex_dg.mesh import build_octa_sphere_mesh
 from simplex_dg.reference import build_reference_cache
 
 
-def _build_case(level=2, order=4, table="table1"):
+def _build_case(ndivs=4, order=4, table="table1"):
     ref = build_reference_cache(order=order, table=table)
-    mesh = build_octa_sphere_mesh(level=level, radius=1.0)
+    mesh = build_octa_sphere_mesh(ndivs=ndivs, radius=1.0)
     geom = build_geometry_cache(mesh, ref)
 
     return mesh, ref, geom
 
 
 def test_geometry_cache_shapes():
-    mesh, ref, geom = _build_case(level=2, order=4)
+    mesh, ref, geom = _build_case(ndivs=4, order=4)
 
     K = mesh.elements.shape[0]
     Np = ref.rs.shape[0]
@@ -35,7 +35,7 @@ def test_geometry_cache_shapes():
 
 
 def test_geometry_nodes_are_on_sphere():
-    mesh, ref, geom = _build_case(level=2, order=4)
+    mesh, ref, geom = _build_case(ndivs=4, order=4)
 
     rv = np.linalg.norm(geom.X, axis=2)
     rf = np.linalg.norm(geom.X_face, axis=3)
@@ -45,7 +45,7 @@ def test_geometry_nodes_are_on_sphere():
 
 
 def test_surface_metric_positive():
-    mesh, ref, geom = _build_case(level=2, order=4)
+    mesh, ref, geom = _build_case(ndivs=4, order=4)
 
     assert np.all(geom.sqrt_g > 0.0)
     assert np.all(geom.gdet > 0.0)
@@ -53,7 +53,7 @@ def test_surface_metric_positive():
 
 
 def test_normals_are_unit_and_tangent_orthogonal():
-    mesh, ref, geom = _build_case(level=2, order=4)
+    mesh, ref, geom = _build_case(ndivs=4, order=4)
 
     normal_norm = np.linalg.norm(geom.normal, axis=2)
 
@@ -64,7 +64,7 @@ def test_normals_are_unit_and_tangent_orthogonal():
 
 
 def test_dual_basis_identity():
-    mesh, ref, geom = _build_case(level=2, order=4)
+    mesh, ref, geom = _build_case(ndivs=4, order=4)
 
     res = dual_basis_residuals(geom)
 
@@ -75,7 +75,7 @@ def test_dual_basis_identity():
 
 
 def test_face_geometry_orthogonality():
-    mesh, ref, geom = _build_case(level=2, order=4)
+    mesh, ref, geom = _build_case(ndivs=4, order=4)
 
     tf = geom.face_tangent / geom.face_jacobian[:, :, :, None]
 
@@ -90,7 +90,7 @@ def test_face_geometry_orthogonality():
 
 def test_table2_geometry_cache_also_builds():
     ref = build_reference_cache(order=4, table="table2")
-    mesh = build_octa_sphere_mesh(level=1, radius=1.0)
+    mesh = build_octa_sphere_mesh(ndivs=2, radius=1.0)
     geom = build_geometry_cache(mesh, ref)
 
     assert geom.X.shape[0] == mesh.elements.shape[0]

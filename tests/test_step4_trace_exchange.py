@@ -13,9 +13,9 @@ from simplex_dg.trace import (
 )
 
 
-def _build_case(level=2, order=4, table="table1"):
+def _build_case(ndivs=4, order=4, table="table1"):
     ref = build_reference_cache(order=order, table=table)
-    mesh = build_octa_sphere_mesh(level=level, radius=1.0)
+    mesh = build_octa_sphere_mesh(ndivs=ndivs, radius=1.0)
     conn = build_connectivity_cache_from_mesh(mesh)
     geom = build_geometry_cache(mesh, ref)
     trace = build_trace_cache(ref, conn)
@@ -47,7 +47,7 @@ def _gather_exact_face_geometry(geom, trace):
 
 
 def test_trace_cache_shapes():
-    mesh, ref, conn, geom, trace = _build_case(level=2, order=4)
+    mesh, ref, conn, geom, trace = _build_case(ndivs=4, order=4)
 
     K = mesh.elements.shape[0]
     Np = ref.rs.shape[0]
@@ -61,7 +61,7 @@ def test_trace_cache_shapes():
 
 
 def test_evaluate_face_traces_shape():
-    mesh, ref, conn, geom, trace = _build_case(level=2, order=4)
+    mesh, ref, conn, geom, trace = _build_case(ndivs=4, order=4)
 
     q = np.ones((mesh.elements.shape[0], ref.rs.shape[0]))
     qM = evaluate_face_traces(q, trace)
@@ -70,7 +70,7 @@ def test_evaluate_face_traces_shape():
 
 
 def test_gather_neighbor_traces_shape():
-    mesh, ref, conn, geom, trace = _build_case(level=2, order=4)
+    mesh, ref, conn, geom, trace = _build_case(ndivs=4, order=4)
 
     q = np.ones((mesh.elements.shape[0], ref.rs.shape[0]))
     qM = evaluate_face_traces(q, trace)
@@ -80,7 +80,7 @@ def test_gather_neighbor_traces_shape():
 
 
 def test_pair_face_traces_shape():
-    mesh, ref, conn, geom, trace = _build_case(level=2, order=4)
+    mesh, ref, conn, geom, trace = _build_case(ndivs=4, order=4)
 
     q = np.ones((mesh.elements.shape[0], ref.rs.shape[0]))
     traces = pair_face_traces(q, trace)
@@ -90,7 +90,7 @@ def test_pair_face_traces_shape():
 
 
 def test_constant_trace_consistency_table1():
-    mesh, ref, conn, geom, trace = _build_case(level=2, order=4, table="table1")
+    mesh, ref, conn, geom, trace = _build_case(ndivs=4, order=4, table="table1")
 
     mismatch = check_constant_trace_consistency(trace, value=3.25)
 
@@ -98,7 +98,7 @@ def test_constant_trace_consistency_table1():
 
 
 def test_constant_trace_consistency_table2():
-    mesh, ref, conn, geom, trace = _build_case(level=1, order=4, table="table2")
+    mesh, ref, conn, geom, trace = _build_case(ndivs=2, order=4, table="table2")
 
     mismatch = check_constant_trace_consistency(trace, value=-2.0)
 
@@ -106,7 +106,7 @@ def test_constant_trace_consistency_table2():
 
 
 def test_exact_face_geometry_continuity_after_neighbor_gather():
-    mesh, ref, conn, geom, trace = _build_case(level=2, order=4, table="table1")
+    mesh, ref, conn, geom, trace = _build_case(ndivs=4, order=4, table="table1")
 
     XP = _gather_exact_face_geometry(geom, trace)
     interior = ~trace.is_boundary
@@ -117,7 +117,7 @@ def test_exact_face_geometry_continuity_after_neighbor_gather():
 
 
 def test_projected_coordinate_field_x_component_reasonable():
-    mesh, ref, conn, geom, trace = _build_case(level=2, order=4, table="table1")
+    mesh, ref, conn, geom, trace = _build_case(ndivs=4, order=4, table="table1")
 
     q = geom.X[:, :, 0]
     traces = pair_face_traces(q, trace)
@@ -130,7 +130,7 @@ def test_projected_coordinate_field_x_component_reasonable():
 
 
 def test_projected_coordinate_field_y_component_reasonable():
-    mesh, ref, conn, geom, trace = _build_case(level=2, order=4, table="table1")
+    mesh, ref, conn, geom, trace = _build_case(ndivs=4, order=4, table="table1")
 
     q = geom.X[:, :, 1]
     traces = pair_face_traces(q, trace)
@@ -140,7 +140,7 @@ def test_projected_coordinate_field_y_component_reasonable():
 
 
 def test_projected_coordinate_field_z_component_reasonable():
-    mesh, ref, conn, geom, trace = _build_case(level=2, order=4, table="table1")
+    mesh, ref, conn, geom, trace = _build_case(ndivs=4, order=4, table="table1")
 
     q = geom.X[:, :, 2]
     traces = pair_face_traces(q, trace)
@@ -150,7 +150,7 @@ def test_projected_coordinate_field_z_component_reasonable():
 
 
 def test_numba_and_numpy_trace_paths_agree():
-    mesh, ref, conn, geom, trace = _build_case(level=2, order=4, table="table1")
+    mesh, ref, conn, geom, trace = _build_case(ndivs=4, order=4, table="table1")
 
     q = geom.X[:, :, 0] + 0.25 * geom.X[:, :, 1] - 0.5 * geom.X[:, :, 2]
 

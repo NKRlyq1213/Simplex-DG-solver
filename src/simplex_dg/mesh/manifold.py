@@ -10,7 +10,7 @@ class ManifoldMesh:
     vertices: np.ndarray
     elements: np.ndarray
     radius: float
-    level: int
+    ndivs: int
     element_patch_ids: np.ndarray
 
 
@@ -80,23 +80,23 @@ def _base_octahedron(radius: float = 1.0) -> tuple[np.ndarray, np.ndarray]:
     return vertices, elements
 
 
-def build_octa_sphere_mesh(level: int, radius: float = 1.0, round_decimals: int = 14) -> ManifoldMesh:
-    if level < 0:
-        raise ValueError("level must be >= 0.")
+def build_octa_sphere_mesh(ndivs: int, radius: float = 1.0, round_decimals: int = 14) -> ManifoldMesh:
+    if ndivs < 1:
+        raise ValueError("ndivs must be >= 1.")
 
     if radius <= 0.0:
         raise ValueError("radius must be positive.")
 
     base_vertices, base_elements = _base_octahedron(radius=radius)
 
-    if level == 0:
+    if ndivs == 1:
         element_patch_ids = np.arange(base_elements.shape[0], dtype=int)
 
         mesh = ManifoldMesh(
             vertices=base_vertices,
             elements=base_elements,
             radius=float(radius),
-            level=int(level),
+            ndivs=int(ndivs),
             element_patch_ids=element_patch_ids,
         )
 
@@ -104,7 +104,7 @@ def build_octa_sphere_mesh(level: int, radius: float = 1.0, round_decimals: int 
 
         return mesh
 
-    n = 2**level
+    n = int(ndivs)
 
     vertices: list[np.ndarray] = []
     vertex_map: dict[tuple[float, float, float], int] = {}
@@ -160,7 +160,7 @@ def build_octa_sphere_mesh(level: int, radius: float = 1.0, round_decimals: int 
         vertices=vertices_arr,
         elements=elements_arr,
         radius=float(radius),
-        level=int(level),
+        ndivs=int(ndivs),
         element_patch_ids=np.asarray(patch_ids, dtype=int),
     )
 

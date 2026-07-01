@@ -37,7 +37,7 @@ def main() -> None:
     omega = (0.0, 0.0, 1.0)
 
     ref = build_reference_cache(order=3, table="table1")
-    mesh = build_octa_sphere_mesh(level=1, radius=radius)
+    mesh = build_octa_sphere_mesh(ndivs=2, radius=radius)
     conn = build_connectivity_cache_from_mesh(mesh)
     geom = build_geometry_cache(mesh, ref)
     trace = build_trace_cache(ref, conn)

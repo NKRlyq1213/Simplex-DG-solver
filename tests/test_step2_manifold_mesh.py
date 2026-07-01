@@ -7,8 +7,8 @@ from simplex_dg.mesh import (
 )
 
 
-def test_level0_octa_sphere_counts():
-    mesh = build_octa_sphere_mesh(level=0, radius=1.0)
+def test_ndivs1_octa_sphere_counts():
+    mesh = build_octa_sphere_mesh(ndivs=1, radius=1.0)
 
     assert mesh.vertices.shape == (6, 3)
     assert mesh.elements.shape == (8, 3)
@@ -19,25 +19,33 @@ def test_level0_octa_sphere_counts():
 
 
 def test_refined_octa_sphere_triangle_count():
-    for level in (1, 2, 3):
-        mesh = build_octa_sphere_mesh(level=level, radius=1.0)
+    for ndivs in (2, 4, 8):
+        mesh = build_octa_sphere_mesh(ndivs=ndivs, radius=1.0)
 
-        expected_k = 8 * (4**level)
+        expected_k = 8 * (ndivs**2)
         assert mesh.elements.shape[0] == expected_k
 
         r = np.linalg.norm(mesh.vertices, axis=1)
         assert np.allclose(r, 1.0)
 
 
+def test_non_power_of_two_ndivs_triangle_count():
+    for ndivs in (3, 6):
+        mesh = build_octa_sphere_mesh(ndivs=ndivs, radius=1.0)
+
+        assert mesh.ndivs == ndivs
+        assert mesh.elements.shape[0] == 8 * (ndivs**2)
+
+
 def test_all_triangles_outward_oriented():
-    mesh = build_octa_sphere_mesh(level=2, radius=1.0)
+    mesh = build_octa_sphere_mesh(ndivs=4, radius=1.0)
     signed = triangle_outward_signed_area_proxy(mesh.vertices, mesh.elements)
 
     assert np.all(signed > 0.0)
 
 
 def test_closed_sphere_has_no_boundary_faces():
-    mesh = build_octa_sphere_mesh(level=2, radius=1.0)
+    mesh = build_octa_sphere_mesh(ndivs=4, radius=1.0)
     conn = build_connectivity_cache_from_mesh(mesh)
 
     assert conn.boundary_faces.shape == (0, 2)
@@ -45,7 +53,7 @@ def test_closed_sphere_has_no_boundary_faces():
 
 
 def test_connectivity_face_count_identity_closed_sphere():
-    mesh = build_octa_sphere_mesh(level=2, radius=1.0)
+    mesh = build_octa_sphere_mesh(ndivs=4, radius=1.0)
     conn = build_connectivity_cache_from_mesh(mesh)
 
     k = mesh.elements.shape[0]
@@ -55,7 +63,7 @@ def test_connectivity_face_count_identity_closed_sphere():
 
 
 def test_connectivity_symmetry():
-    mesh = build_octa_sphere_mesh(level=2, radius=1.0)
+    mesh = build_octa_sphere_mesh(ndivs=4, radius=1.0)
     conn = build_connectivity_cache_from_mesh(mesh)
 
     for k in range(mesh.elements.shape[0]):

@@ -14,9 +14,9 @@ from simplex_dg.time import cfl_dt_from_geometry, integrate_lsrk54, manifold_int
 from simplex_dg.trace import build_trace_cache
 
 
-def _build_case(level=1, order=3):
+def _build_case(ndivs=2, order=3):
     ref = build_reference_cache(order=order, table="table1")
-    mesh = build_octa_sphere_mesh(level=level, radius=1.0)
+    mesh = build_octa_sphere_mesh(ndivs=ndivs, radius=1.0)
     conn = build_connectivity_cache_from_mesh(mesh)
     geom = build_geometry_cache(mesh, ref)
     trace = build_trace_cache(ref, conn)
@@ -51,7 +51,7 @@ def test_gaussian_center_rotates_around_z_axis():
 
 
 def test_exact_gaussian_t0_matches_initial_gaussian():
-    mesh, ref, geom, trace, full = _build_case(level=1, order=3)
+    mesh, ref, geom, trace, full = _build_case(ndivs=2, order=3)
 
     q0 = gaussian_on_sphere(geom.X, radius=mesh.radius, sigma=0.35)
     qe = exact_gaussian_solid_body(geom.X, t=0.0, radius=mesh.radius, sigma=0.35)
@@ -60,7 +60,7 @@ def test_exact_gaussian_t0_matches_initial_gaussian():
 
 
 def test_error_report_zero_for_exact_match():
-    mesh, ref, geom, trace, full = _build_case(level=1, order=3)
+    mesh, ref, geom, trace, full = _build_case(ndivs=2, order=3)
 
     q = gaussian_on_sphere(geom.X, radius=mesh.radius, sigma=0.35)
 
@@ -73,7 +73,7 @@ def test_error_report_zero_for_exact_match():
 
 
 def test_gaussian_short_run_error_is_finite():
-    mesh, ref, geom, trace, full = _build_case(level=1, order=3)
+    mesh, ref, geom, trace, full = _build_case(ndivs=2, order=3)
 
     sigma = 0.35
 
@@ -113,7 +113,7 @@ def test_gaussian_short_run_error_is_finite():
 
 
 def test_gaussian_mass_is_positive():
-    mesh, ref, geom, trace, full = _build_case(level=1, order=3)
+    mesh, ref, geom, trace, full = _build_case(ndivs=2, order=3)
 
     q = gaussian_on_sphere(geom.X, radius=mesh.radius, sigma=0.35)
 

@@ -11,9 +11,9 @@ from simplex_dg.rhs import (
 )
 
 
-def _build_case(level=2, order=4, table="table1", velocity=None):
+def _build_case(ndivs=4, order=4, table="table1", velocity=None):
     ref = build_reference_cache(order=order, table=table)
-    mesh = build_octa_sphere_mesh(level=level, radius=1.0)
+    mesh = build_octa_sphere_mesh(ndivs=ndivs, radius=1.0)
     geom = build_geometry_cache(mesh, ref)
     rhs_cache = build_volume_rhs_cache(ref, geom, velocity=velocity)
 
@@ -21,7 +21,7 @@ def _build_case(level=2, order=4, table="table1", velocity=None):
 
 
 def test_volume_rhs_cache_shapes():
-    mesh, ref, geom, rhs_cache = _build_case(level=2, order=4)
+    mesh, ref, geom, rhs_cache = _build_case(ndivs=4, order=4)
 
     K = mesh.elements.shape[0]
     Np = ref.rs.shape[0]
@@ -41,7 +41,7 @@ def test_volume_rhs_cache_shapes():
 
 
 def test_velocity_is_tangent():
-    mesh, ref, geom, rhs_cache = _build_case(level=2, order=4)
+    mesh, ref, geom, rhs_cache = _build_case(ndivs=4, order=4)
 
     tangent_error = np.max(np.abs(np.sum(rhs_cache.velocity * geom.normal, axis=2)))
 
@@ -50,7 +50,7 @@ def test_velocity_is_tangent():
 
 def test_zero_velocity_gives_zero_divergence():
     ref = build_reference_cache(order=4, table="table1")
-    mesh = build_octa_sphere_mesh(level=1, radius=1.0)
+    mesh = build_octa_sphere_mesh(ndivs=2, radius=1.0)
     geom = build_geometry_cache(mesh, ref)
 
     zero_velocity = np.zeros_like(geom.X)
@@ -67,7 +67,7 @@ def test_zero_velocity_gives_zero_divergence():
 
 
 def test_volume_rhs_is_negative_divergence():
-    mesh, ref, geom, rhs_cache = _build_case(level=2, order=4)
+    mesh, ref, geom, rhs_cache = _build_case(ndivs=4, order=4)
 
     q = geom.X[:, :, 0] + 0.25 * geom.X[:, :, 1]
 
@@ -78,7 +78,7 @@ def test_volume_rhs_is_negative_divergence():
 
 
 def test_split_operator_linearity():
-    mesh, ref, geom, rhs_cache = _build_case(level=2, order=4)
+    mesh, ref, geom, rhs_cache = _build_case(ndivs=4, order=4)
 
     q1 = geom.X[:, :, 0]
     q2 = geom.X[:, :, 1] - 0.5 * geom.X[:, :, 2]
@@ -93,7 +93,7 @@ def test_split_operator_linearity():
 
 
 def test_numpy_and_numba_split_paths_agree():
-    mesh, ref, geom, rhs_cache = _build_case(level=2, order=4)
+    mesh, ref, geom, rhs_cache = _build_case(ndivs=4, order=4)
 
     q = geom.X[:, :, 0] + 0.25 * geom.X[:, :, 1] - 0.5 * geom.X[:, :, 2]
 
@@ -104,7 +104,7 @@ def test_numpy_and_numba_split_paths_agree():
 
 
 def test_numpy_and_numba_conservative_paths_agree():
-    mesh, ref, geom, rhs_cache = _build_case(level=2, order=4)
+    mesh, ref, geom, rhs_cache = _build_case(ndivs=4, order=4)
 
     q = geom.X[:, :, 0] + 0.25 * geom.X[:, :, 1] - 0.5 * geom.X[:, :, 2]
 
@@ -115,7 +115,7 @@ def test_numpy_and_numba_conservative_paths_agree():
 
 
 def test_solid_body_rotation_has_nonzero_speed():
-    mesh, ref, geom, rhs_cache = _build_case(level=2, order=4)
+    mesh, ref, geom, rhs_cache = _build_case(ndivs=4, order=4)
 
     assert rhs_cache.max_speed > 0.0
     assert np.max(rhs_cache.speed) == rhs_cache.max_speed

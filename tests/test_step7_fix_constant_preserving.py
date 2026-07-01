@@ -8,9 +8,9 @@ from simplex_dg.time import RK4C, cfl_dt_from_geometry, integrate_lsrk54
 from simplex_dg.trace import build_trace_cache
 
 
-def _build_case(level=1, order=3):
+def _build_case(ndivs=2, order=3):
     ref = build_reference_cache(order=order, table="table1")
-    mesh = build_octa_sphere_mesh(level=level, radius=1.0)
+    mesh = build_octa_sphere_mesh(ndivs=ndivs, radius=1.0)
     conn = build_connectivity_cache_from_mesh(mesh)
     geom = build_geometry_cache(mesh, ref)
     trace = build_trace_cache(ref, conn)
@@ -26,7 +26,7 @@ def test_lsrk54_rk4c_coefficient_is_correct():
 
 
 def test_constant_state_full_rhs_zero():
-    mesh, ref, geom, trace, full = _build_case(level=1, order=3)
+    mesh, ref, geom, trace, full = _build_case(ndivs=2, order=3)
 
     q = np.ones((mesh.elements.shape[0], ref.rs.shape[0]))
 
@@ -36,7 +36,7 @@ def test_constant_state_full_rhs_zero():
 
 
 def test_constant_state_integration_preserved():
-    mesh, ref, geom, trace, full = _build_case(level=1, order=3)
+    mesh, ref, geom, trace, full = _build_case(ndivs=2, order=3)
 
     q0 = np.ones((mesh.elements.shape[0], ref.rs.shape[0]))
 

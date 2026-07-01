@@ -36,7 +36,7 @@ def build_full_rhs_cache(
     flux_type: str = "upwind",
     lf_alpha: float = 1.0,
     project_velocity: bool = True,
-    constant_preserving: bool = True,
+    constant_preserving: bool = False,
     volume_form: str = "conservative",
     validate: bool = True,
 ) -> FullRHSCache:
@@ -99,38 +99,45 @@ def full_rhs_split(
     else:
         raise ValueError("cache.volume_form must be 'conservative' or 'split'.")
 
-    if cache.constant_preserving:
-        # Conservative form should not subtract q * div_velocity here.
-        # Any GCL correction must be built into the metric/flux construction
-        # rather than added as a non-conservative local source.
-        pass
-
     traces = pair_face_traces(
         q,
         cache.trace,
         use_numba=use_numba,
     )
 
-    if cache.volume_form == "split":
-        surf = surface_lift_correction_split_projected_flux(
-            q,
+    if cache.constant_preserving:
+        # On curved mapped elements, the discrete metric divergence is not
+        # exactly zero even for analytically divergence-free solid-body
+        # rotation. Keep the legacy geometric surface correction together with
+        # the local q*div_velocity compensation so constant states remain
+        # invariant under the full operator.
+        div = div - q * cache.volume.div_velocity
+        surf = surface_lift_correction(
             traces,
-            cache.volume,
             cache.surface,
-            cache.trace,
-            use_numba=use_numba,
-        )
-    elif cache.volume_form == "conservative":
-        surf = surface_lift_correction_projected_flux(
-            q,
-            traces,
-            cache.volume,
-            cache.surface,
-            cache.trace,
             use_numba=use_numba,
         )
     else:
-        raise ValueError("cache.volume_form must be 'conservative' or 'split'.")
+        if cache.volume_form == "split":
+            surf = surface_lift_correction_split_projected_flux(
+                q,
+                traces,
+                cache.volume,
+                cache.surface,
+                cache.trace,
+                use_numba=use_numba,
+            )
+        elif cache.volume_form == "conservative":
+            surf = surface_lift_correction_projected_flux(
+                q,
+                traces,
+                cache.volume,
+                cache.surface,
+                cache.trace,
+                use_numba=use_numba,
+            )
+        else:
+            raise ValueError("cache.volume_form must be 'conservative' or 'split'.")
 
     if out is None:
         rhs = np.empty_like(q)
