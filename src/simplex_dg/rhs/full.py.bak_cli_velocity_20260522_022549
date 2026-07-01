@@ -34,7 +34,6 @@ def build_full_rhs_cache(
     velocity_face: np.ndarray | None = None,
     omega: np.ndarray | tuple[float, float, float] = (0.0, 0.0, 1.0),
     flux_type: str = "upwind",
-    lf_alpha: float = 1.0,
     project_velocity: bool = True,
     constant_preserving: bool = True,
     volume_form: str = "conservative",
@@ -65,7 +64,6 @@ def build_full_rhs_cache(
         velocity_face=velocity_face,
         omega=omega,
         flux_type=flux_type,
-        lf_alpha=lf_alpha,
         project_velocity=project_velocity,
         validate=validate,
     )

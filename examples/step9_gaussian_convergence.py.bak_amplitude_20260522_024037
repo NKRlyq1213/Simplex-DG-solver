@@ -87,8 +87,8 @@ def rotation_axis_from_alpha0(alpha0: float) -> tuple[float, float, float]:
         axis = (0, sin(alpha0), cos(alpha0)).
     """
     return (
-        -float(np.sin(alpha0)),
-        0,
+        0.0,
+        float(np.sin(alpha0)),
         float(np.cos(alpha0)),
     )
 
@@ -102,7 +102,6 @@ def run_one_level(
     tf: float,
     sigma: float,
     radius: float,
-    amplitude: float,
     alpha0: float,
     u0: float,
     lf_alpha: float,
@@ -137,17 +136,8 @@ def run_one_level(
         center=center0,
         radius=radius,
         sigma=sigma,
-        amplitude=amplitude,
+        amplitude=1.0,
     )
-
-    # Initial invariants / ?????
-    mass0_ref = manifold_integral(q0, ref, geom)
-    l2_norm0_ref = manifold_l2_norm(q0, ref, geom)
-    energy0_ref = 0.5 * l2_norm0_ref * l2_norm0_ref
-
-    # Denominators for relative errors / ??????
-    mass0_denom = max(abs(mass0_ref), np.finfo(float).tiny)
-    energy0_denom = max(abs(energy0_ref), np.finfo(float).tiny)
 
     dt_raw = cfl_dt_from_geometry(
         ref=ref,
@@ -168,24 +158,12 @@ def run_one_level(
             t=t,
             radius=radius,
             sigma=sigma,
-            amplitude=amplitude,
+            amplitude=1.0,
             center0=center0,
             omega=omega,
         )
 
         rep = error_report(q, q_exact_t, ref, geom)
-
-        mass_t = manifold_integral(q, ref, geom)
-        l2_norm_t = manifold_l2_norm(q, ref, geom)
-        energy_t = 0.5 * l2_norm_t * l2_norm_t
-
-        # Absolute relative errors / ??????
-        relative_mass_error = abs(mass_t - mass0_ref) / mass0_denom
-        relative_energy_error = abs(energy_t - energy0_ref) / energy0_denom
-
-        # Signed relative errors / ??????
-        signed_relative_mass_error = (mass_t - mass0_ref) / mass0_denom
-        signed_relative_energy_error = (energy_t - energy0_ref) / energy0_denom
 
         return {
             "level": float(level),
@@ -193,13 +171,8 @@ def run_one_level(
             "l2_error": rep.l2_error,
             "relative_l2_error": rep.relative_l2_error,
             "linf_error": rep.linf_error,
-            "mass": mass_t,
-            "l2_norm": l2_norm_t,
-            "energy": energy_t,
-            "relative_mass_error": relative_mass_error,
-            "relative_energy_error": relative_energy_error,
-            "signed_relative_mass_error": signed_relative_mass_error,
-            "signed_relative_energy_error": signed_relative_energy_error,
+            "mass": manifold_integral(q, ref, geom),
+            "l2_norm": manifold_l2_norm(q, ref, geom),
         }
 
     result = integrate_lsrk54(
@@ -217,7 +190,7 @@ def run_one_level(
         t=tf,
         radius=radius,
         sigma=sigma,
-        amplitude=amplitude,
+        amplitude=1.0,
         center0=center0,
         omega=omega,
     )
@@ -243,7 +216,7 @@ def run_one_level(
         l2_error=rep.l2_error,
         relative_l2_error=rep.relative_l2_error,
         linf_error=rep.linf_error,
-        mass_drift=(massf - mass0) / mass0,
+        mass_drift=massf - mass0,
         l2_norm_drift=l2f - l20,
     )
 
@@ -278,7 +251,7 @@ def plot_error_time_history(
     fig, ax = plt.subplots(figsize=(8.0, 5.0))
 
     for level, hist in sorted(histories.items()):
-        t = np.array([entry["t"] for entry in hist], dtype=float) / float(time_scale)
+        t = np.array([entry["t"] for entry in hist], dtype=float)
         y = np.array([entry[quantity] for entry in hist], dtype=float)
 
         ax.semilogy(t, y, linewidth=1.5, label=f"level {level}")
@@ -293,111 +266,6 @@ def plot_error_time_history(
     fig.savefig(output_path, dpi=200)
     plt.close(fig)
 
-
-
-def plot_time_history_quantity(
-    histories: dict[int, list[dict[str, float]]],
-    output_path: Path,
-    *,
-    quantity: str,
-    ylabel: str,
-    title: str,
-    semilogy: bool = True,
-    time_scale: float = 1.0,
-    xlabel: str = "time",
-) -> None:
-    """Plot a monitored scalar quantity over time.
-
-    ?????
-        ??? relative mass error?relative energy error?
-        signed relative energy error ???????
-    """
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    fig, ax = plt.subplots(figsize=(8.0, 5.0))
-
-    for level, hist in sorted(histories.items()):
-        t = np.array([entry["t"] for entry in hist], dtype=float)
-        y = np.array([entry[quantity] for entry in hist], dtype=float)
-
-        if semilogy:
-            # Avoid log(0). Exact zero is shown near machine tiny.
-            # ?? log(0)???? 0 ??????? machine tiny ???
-            y_plot = np.maximum(y, np.finfo(float).tiny)
-            ax.semilogy(t, y_plot, linewidth=1.5, label=f"level {level}")
-        else:
-            ax.plot(t, y, linewidth=1.5, label=f"level {level}")
-
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    ax.set_title(title)
-    ax.grid(True, which="both", linestyle="--", linewidth=0.5)
-
-    if semilogy:
-        # Fixed y-axis range for relative error plots.
-        # ??????? y ????10^{-18} ? 10^{1}
-        ax.set_ylim(1.0e-18, 1.0e1)
-    else:
-        ax.axhline(0.0, linestyle="--", linewidth=1.0)
-
-    ax.legend()
-
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=200)
-    plt.close(fig)
-
-
-def plot_time_history_quantity_each_level(
-    histories: dict[int, list[dict[str, float]]],
-    output_dir: Path,
-    *,
-    filename_prefix: str,
-    quantity: str,
-    ylabel: str,
-    title_prefix: str,
-    semilogy: bool = True,
-    time_scale: float = 1.0,
-    xlabel: str = "time",
-) -> list[Path]:
-    """Plot one time-history figure per refinement level.
-
-    ?????
-        ??? energy error history ?? level ??????
-        ??????????????
-    """
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    output_paths: list[Path] = []
-
-    for level, hist in sorted(histories.items()):
-        output_path = output_dir / f"{filename_prefix}_level{level}.png"
-
-        t = np.array([entry["t"] for entry in hist], dtype=float) / float(time_scale)
-        y = np.array([entry[quantity] for entry in hist], dtype=float)
-
-        fig, ax = plt.subplots(figsize=(8.0, 5.0))
-
-        if semilogy:
-            y_plot = np.maximum(y, np.finfo(float).tiny)
-            ax.semilogy(t, y_plot, linewidth=1.5, label=f"level {level}")
-            ax.set_ylim(1.0e-18, 1.0e1)
-        else:
-            ax.plot(t, y, linewidth=1.5, label=f"level {level}")
-            ax.axhline(0.0, linestyle="--", linewidth=1.0)
-
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel(ylabel)
-        ax.set_title(f"{title_prefix}, level {level}")
-        ax.grid(True, which="both", linestyle="--", linewidth=0.5)
-        ax.legend()
-
-        fig.tight_layout()
-        fig.savefig(output_path, dpi=200)
-        plt.close(fig)
-
-        output_paths.append(output_path)
-
-    return output_paths
 
 def plot_error_convergence(
     rows: list[ConvergenceRow],
@@ -488,14 +356,6 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Override Gaussian physical arc-length width. If omitted, sigma_physical = R*sigma.",
     )
-    parser.add_argument(
-        "--amplitude",
-        "--height",
-        dest="amplitude",
-        type=parse_float_expr,
-        default=1.0,
-        help="Gaussian peak height/amplitude.",
-    )
     parser.add_argument("--radius", "--R", dest="radius", type=parse_float_expr, default=1.0)
     parser.add_argument(
         "--alpha0",
@@ -527,18 +387,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--no-numba", action="store_true")
     parser.add_argument("--history-every", type=int, default=1)
-    parser.add_argument(
-        "--plot-time-scale",
-        type=parse_float_expr,
-        default=1.0,
-        help="Plot-time scaling. The plotted x-axis is t / plot_time_scale. Use 86400 if t is measured in seconds.",
-    )
-    parser.add_argument(
-        "--plot-time-label",
-        type=str,
-        default="time (days)",
-        help="Label for the plotted time axis.",
-    )
     parser.add_argument("--output", type=str, default="outputs/convergence/gaussian_sphere_convergence.csv")
     parser.add_argument("--plot-dir", type=str, default="outputs/convergence/plots")
     parser.add_argument("--no-plots", action="store_true")
@@ -567,7 +415,6 @@ def main() -> None:
     print(f"tf            : {args.tf}")
     print(f"sigma_angle   : {args.sigma}")
     print(f"sigma_physical: {sigma_physical}")
-    print(f"amplitude     : {args.amplitude}")
     print(f"radius        : {args.radius}")
     print(f"alpha0        : {args.alpha0}")
     print(f"u0            : {args.u0}")
@@ -590,7 +437,6 @@ def main() -> None:
             tf=args.tf,
             sigma=sigma_physical,
             radius=args.radius,
-            amplitude=args.amplitude,
             alpha0=args.alpha0,
             u0=args.u0,
             lf_alpha=args.lf_alpha,
@@ -608,7 +454,7 @@ def main() -> None:
         print(
             f"level={level}, K={row.n_elements}, DOFs={row.total_dofs}, "
             f"L2={row.l2_error:.6e}, rel={row.relative_l2_error:.6e}, "
-            f"Linf={row.linf_error:.6e}, mass ref drift={row.mass_drift:+.6e}, "
+            f"Linf={row.linf_error:.6e}, mass drift={row.mass_drift:+.6e}, "
             f"time={elapsed:.2f}s"
         )
 
@@ -626,66 +472,13 @@ def main() -> None:
         plot_dir.mkdir(parents=True, exist_ok=True)
 
         time_plot = plot_dir / "gaussian_error_time_history.png"
-        mass_plot = plot_dir / "gaussian_rel_mass_error_history.png"
-        energy_plot = plot_dir / "gaussian_rel_energy_error_history.png"
-        signed_energy_plot = plot_dir / "gaussian_signed_rel_energy_error_history.png"
         conv_plot = plot_dir / "gaussian_error_convergence.png"
         order_plot = plot_dir / "gaussian_observed_order.png"
 
-        plot_time_history_quantity(
+        plot_error_time_history(
             histories=histories,
             output_path=time_plot,
             quantity="relative_l2_error",
-            ylabel="relative L2 error",
-            title="Gaussian advection relative L2 error history",
-            semilogy=True,
-            time_scale=args.plot_time_scale,
-            xlabel=args.plot_time_label,
-        )
-
-        plot_time_history_quantity(
-            histories=histories,
-            output_path=mass_plot,
-            quantity="relative_mass_error",
-            ylabel="relative mass error",
-            title="Relative mass error history",
-            semilogy=True,
-            time_scale=args.plot_time_scale,
-            xlabel=args.plot_time_label,
-        )
-
-        plot_time_history_quantity(
-            histories=histories,
-            output_path=energy_plot,
-            quantity="relative_energy_error",
-            ylabel="relative energy error",
-            title="Relative energy error history",
-            semilogy=True,
-            time_scale=args.plot_time_scale,
-            xlabel=args.plot_time_label,
-        )
-
-        signed_energy_level_plots = plot_time_history_quantity_each_level(
-            histories=histories,
-            output_dir=plot_dir,
-            filename_prefix="gaussian_signed_rel_energy_error_history",
-            quantity="signed_relative_energy_error",
-            ylabel="signed relative energy error",
-            title_prefix="Signed relative energy error history",
-            semilogy=False,
-            time_scale=args.plot_time_scale,
-            xlabel=args.plot_time_label,
-        )
-
-        plot_time_history_quantity(
-            histories=histories,
-            output_path=signed_energy_plot,
-            quantity="signed_relative_energy_error",
-            ylabel="signed relative energy error",
-            title="Signed relative energy error history",
-            semilogy=False,
-            time_scale=args.plot_time_scale,
-            xlabel=args.plot_time_label,
         )
 
         plot_error_convergence(
@@ -701,11 +494,6 @@ def main() -> None:
         print()
         print("Plots written to:")
         print(f"  {time_plot}")
-        print(f"  {mass_plot}")
-        print(f"  {energy_plot}")
-        for signed_energy_level_plot in signed_energy_level_plots:
-            print(f"  {signed_energy_level_plot}")
-        print(f"  {signed_energy_plot}")
         print(f"  {conv_plot}")
         print(f"  {order_plot}")
 

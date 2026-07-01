@@ -47,7 +47,6 @@ class SurfaceRHSCache:
 
     flux_type: str
     flux_id: int
-    lf_alpha: float
 
 
 def _should_use_numba(use_numba: bool | None) -> bool:
@@ -115,7 +114,6 @@ def build_surface_rhs_cache(
     velocity_face: np.ndarray | None = None,
     omega: np.ndarray | tuple[float, float, float] = (0.0, 0.0, 1.0),
     flux_type: str = "upwind",
-    lf_alpha: float = 1.0,
     project_velocity: bool = True,
     validate: bool = True,
 ) -> SurfaceRHSCache:
@@ -143,7 +141,6 @@ def build_surface_rhs_cache(
         normal_velocity=normal_velocity,
         flux_type=flux_type.lower().strip(),
         flux_id=flux_id_from_name(flux_type),
-        lf_alpha=float(lf_alpha),
     )
 
     if validate:
@@ -189,14 +186,11 @@ def validate_surface_rhs_cache(
 
     tangent_error = np.max(np.abs(np.sum(cache.face_velocity * geom.face_normal, axis=3)))
 
-    #if tangent_error > tol:
-    #    raise ValueError(f"face_velocity is not tangent: max error = {tangent_error}.")
+    if tangent_error > tol:
+        raise ValueError(f"face_velocity is not tangent: max error = {tangent_error}.")
 
     if cache.flux_id not in (0, 1, 2):
         raise ValueError("Invalid flux_id.")
-
-    if cache.lf_alpha < 0.0:
-        raise ValueError("lf_alpha must be non-negative.")
 
 
 def numerical_flux(
@@ -204,7 +198,6 @@ def numerical_flux(
     qP: np.ndarray,
     normal_velocity: np.ndarray,
     flux_id: int,
-    lf_alpha: float = 1.0,
 ) -> np.ndarray:
     qM = np.asarray(qM, dtype=float)
     qP = np.asarray(qP, dtype=float)
@@ -213,9 +206,6 @@ def numerical_flux(
     if not (qM.shape == qP.shape == un.shape):
         raise ValueError("qM, qP, and normal_velocity must have the same shape.")
 
-    if lf_alpha < 0.0:
-        raise ValueError("lf_alpha must be non-negative.")
-
     if flux_id == 0:
         return 0.5 * un * (qM + qP)
 
@@ -223,7 +213,7 @@ def numerical_flux(
         return np.where(un >= 0.0, un * qM, un * qP)
 
     if flux_id == 2:
-        return 0.5 * un * (qM + qP) - 0.5 * float(lf_alpha) * np.abs(un) * (qP - qM)
+        return 0.5 * un * (qM + qP) - 0.5 * np.abs(un) * (qP - qM)
 
     raise ValueError("Invalid flux_id.")
 
@@ -431,7 +421,6 @@ def surface_lift_correction_projected_flux(
         qP=qP,
         normal_velocity=line_velocity,
         flux_id=cache.flux_id,
-        lf_alpha=cache.lf_alpha,
     )
 
     correction = line_flux_m - flux_star_line
@@ -523,7 +512,6 @@ def surface_lift_correction_split_projected_flux(
         qP=qP,
         normal_velocity=line_velocity_common,
         flux_id=cache.flux_id,
-        lf_alpha=cache.lf_alpha,
     )
 
     correction = line_flux_m - flux_star_line
@@ -549,7 +537,6 @@ if _NUMBA_AVAILABLE:
         face_jacobian,
         normal_velocity,
         flux_id,
-        lf_alpha,
         out,
     ):
         K = qM.shape[0]
@@ -577,7 +564,7 @@ if _NUMBA_AVAILABLE:
                             else:
                                 flux_star = un * qp
                         else:
-                            flux_star = 0.5 * un * (qm + qp) - 0.5 * lf_alpha * abs(un) * (qp - qm)
+                            flux_star = 0.5 * un * (qm + qp) - 0.5 * abs(un) * (qp - qm)
 
                         correction = flux_m - flux_star
                         acc += lift[f, i, j] * face_jacobian[k, f, j] * correction
@@ -625,7 +612,6 @@ def surface_lift_correction(
             cache.face_jacobian,
             cache.normal_velocity,
             cache.flux_id,
-            cache.lf_alpha,
             surface,
         )
         return surface
@@ -636,7 +622,6 @@ def surface_lift_correction(
         qP=qP,
         normal_velocity=cache.normal_velocity,
         flux_id=cache.flux_id,
-        lf_alpha=cache.lf_alpha,
     )
 
     correction = cache.face_jacobian * (flux_m - flux_star)

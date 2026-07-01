@@ -278,7 +278,7 @@ def plot_error_time_history(
     fig, ax = plt.subplots(figsize=(8.0, 5.0))
 
     for level, hist in sorted(histories.items()):
-        t = np.array([entry["t"] for entry in hist], dtype=float) / float(time_scale)
+        t = np.array([entry["t"] for entry in hist], dtype=float)
         y = np.array([entry[quantity] for entry in hist], dtype=float)
 
         ax.semilogy(t, y, linewidth=1.5, label=f"level {level}")
@@ -303,8 +303,6 @@ def plot_time_history_quantity(
     ylabel: str,
     title: str,
     semilogy: bool = True,
-    time_scale: float = 1.0,
-    xlabel: str = "time",
 ) -> None:
     """Plot a monitored scalar quantity over time.
 
@@ -328,16 +326,12 @@ def plot_time_history_quantity(
         else:
             ax.plot(t, y, linewidth=1.5, label=f"level {level}")
 
-    ax.set_xlabel(xlabel)
+    ax.set_xlabel("time")
     ax.set_ylabel(ylabel)
     ax.set_title(title)
     ax.grid(True, which="both", linestyle="--", linewidth=0.5)
 
-    if semilogy:
-        # Fixed y-axis range for relative error plots.
-        # ??????? y ????10^{-18} ? 10^{1}
-        ax.set_ylim(1.0e-18, 1.0e1)
-    else:
+    if not semilogy:
         ax.axhline(0.0, linestyle="--", linewidth=1.0)
 
     ax.legend()
@@ -345,59 +339,6 @@ def plot_time_history_quantity(
     fig.tight_layout()
     fig.savefig(output_path, dpi=200)
     plt.close(fig)
-
-
-def plot_time_history_quantity_each_level(
-    histories: dict[int, list[dict[str, float]]],
-    output_dir: Path,
-    *,
-    filename_prefix: str,
-    quantity: str,
-    ylabel: str,
-    title_prefix: str,
-    semilogy: bool = True,
-    time_scale: float = 1.0,
-    xlabel: str = "time",
-) -> list[Path]:
-    """Plot one time-history figure per refinement level.
-
-    ?????
-        ??? energy error history ?? level ??????
-        ??????????????
-    """
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    output_paths: list[Path] = []
-
-    for level, hist in sorted(histories.items()):
-        output_path = output_dir / f"{filename_prefix}_level{level}.png"
-
-        t = np.array([entry["t"] for entry in hist], dtype=float) / float(time_scale)
-        y = np.array([entry[quantity] for entry in hist], dtype=float)
-
-        fig, ax = plt.subplots(figsize=(8.0, 5.0))
-
-        if semilogy:
-            y_plot = np.maximum(y, np.finfo(float).tiny)
-            ax.semilogy(t, y_plot, linewidth=1.5, label=f"level {level}")
-            ax.set_ylim(1.0e-18, 1.0e1)
-        else:
-            ax.plot(t, y, linewidth=1.5, label=f"level {level}")
-            ax.axhline(0.0, linestyle="--", linewidth=1.0)
-
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel(ylabel)
-        ax.set_title(f"{title_prefix}, level {level}")
-        ax.grid(True, which="both", linestyle="--", linewidth=0.5)
-        ax.legend()
-
-        fig.tight_layout()
-        fig.savefig(output_path, dpi=200)
-        plt.close(fig)
-
-        output_paths.append(output_path)
-
-    return output_paths
 
 def plot_error_convergence(
     rows: list[ConvergenceRow],
@@ -527,18 +468,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--no-numba", action="store_true")
     parser.add_argument("--history-every", type=int, default=1)
-    parser.add_argument(
-        "--plot-time-scale",
-        type=parse_float_expr,
-        default=1.0,
-        help="Plot-time scaling. The plotted x-axis is t / plot_time_scale. Use 86400 if t is measured in seconds.",
-    )
-    parser.add_argument(
-        "--plot-time-label",
-        type=str,
-        default="time (days)",
-        help="Label for the plotted time axis.",
-    )
     parser.add_argument("--output", type=str, default="outputs/convergence/gaussian_sphere_convergence.csv")
     parser.add_argument("--plot-dir", type=str, default="outputs/convergence/plots")
     parser.add_argument("--no-plots", action="store_true")
@@ -639,8 +568,6 @@ def main() -> None:
             ylabel="relative L2 error",
             title="Gaussian advection relative L2 error history",
             semilogy=True,
-            time_scale=args.plot_time_scale,
-            xlabel=args.plot_time_label,
         )
 
         plot_time_history_quantity(
@@ -650,8 +577,6 @@ def main() -> None:
             ylabel="relative mass error",
             title="Relative mass error history",
             semilogy=True,
-            time_scale=args.plot_time_scale,
-            xlabel=args.plot_time_label,
         )
 
         plot_time_history_quantity(
@@ -661,20 +586,6 @@ def main() -> None:
             ylabel="relative energy error",
             title="Relative energy error history",
             semilogy=True,
-            time_scale=args.plot_time_scale,
-            xlabel=args.plot_time_label,
-        )
-
-        signed_energy_level_plots = plot_time_history_quantity_each_level(
-            histories=histories,
-            output_dir=plot_dir,
-            filename_prefix="gaussian_signed_rel_energy_error_history",
-            quantity="signed_relative_energy_error",
-            ylabel="signed relative energy error",
-            title_prefix="Signed relative energy error history",
-            semilogy=False,
-            time_scale=args.plot_time_scale,
-            xlabel=args.plot_time_label,
         )
 
         plot_time_history_quantity(
@@ -684,8 +595,6 @@ def main() -> None:
             ylabel="signed relative energy error",
             title="Signed relative energy error history",
             semilogy=False,
-            time_scale=args.plot_time_scale,
-            xlabel=args.plot_time_label,
         )
 
         plot_error_convergence(
@@ -703,8 +612,6 @@ def main() -> None:
         print(f"  {time_plot}")
         print(f"  {mass_plot}")
         print(f"  {energy_plot}")
-        for signed_energy_level_plot in signed_energy_level_plots:
-            print(f"  {signed_energy_level_plot}")
         print(f"  {signed_energy_plot}")
         print(f"  {conv_plot}")
         print(f"  {order_plot}")
