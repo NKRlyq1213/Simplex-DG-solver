@@ -29,6 +29,7 @@ from simplex_dg.rhs import (
     volume_divergence_conservative,
     volume_divergence_split,
 )
+from simplex_dg.time import manifold_integral
 from simplex_dg.trace import build_trace_cache, pair_face_traces
 
 
@@ -74,6 +75,8 @@ def main() -> None:
     )
 
     q = geom.X[:, :, 0] + 0.25 * geom.X[:, :, 1] - 0.5 * geom.X[:, :, 2]
+    ones = np.ones_like(q)
+    q_random = np.random.default_rng(12345).standard_normal(q.shape)
 
     traces = pair_face_traces(q, trace)
     if full.volume_form == "conservative":
@@ -140,6 +143,14 @@ def main() -> None:
         flux_interface_sum = max(flux_interface_sum, float(np.max(np.abs(flux_star[k, f] + flux_plus))))
 
     mass_residual = float(abs(np.sum(ref.area * ref.weights[None, :] * geom.sqrt_g * rhs)))
+    rhs_const = full_rhs(ones, full, use_numba=False)
+    const_linf = float(np.max(np.abs(rhs_const)))
+    const_l2 = float(np.sqrt(np.sum(ref.area * ref.weights[None, :] * geom.sqrt_g * rhs_const * rhs_const)))
+    const_global = float(abs(manifold_integral(rhs_const, ref, geom)))
+    rhs_random = full_rhs(q_random, full, use_numba=False)
+    random_mass_residual = float(abs(manifold_integral(rhs_random, ref, geom)))
+    random_mass_scale = max(float(manifold_integral(np.abs(q_random), ref, geom)), 1.0)
+    direct_composition_error = float(np.max(np.abs(rhs - (-div + surf))))
 
     print("Full RHS cache")
     print("--------------")
@@ -165,7 +176,7 @@ def main() -> None:
     print(f"projected line vel min/max: {line_velocity.min():+.6e}, {line_velocity.max():+.6e}")
     print(f"surface corr min/max     : {surf.min():+.6e}, {surf.max():+.6e}")
     print(f"full rhs min/max         : {rhs.min():+.6e}, {rhs.max():+.6e}")
-    print(f"rhs - (-div+surf) max abs: {np.max(np.abs(rhs - (-div + surf))):.6e}")
+    print(f"rhs - (-div+surf) max abs: {direct_composition_error:.6e}")
     print(f"lift direct error        : {lift_direct_error:.6e}")
     print(f"lift adjoint error       : {lift_adjoint_error:.6e}")
     print(f"face velocity def error  : {np.max(np.abs(full.surface.face_velocity - face_velocity_exact)):.6e}")
@@ -175,6 +186,10 @@ def main() -> None:
     print(f"projected ordering gap   : {ordering_gap:.6e}")
     print(f"numerical flux intf sum  : {flux_interface_sum:.6e}")
     print(f"global mass residual     : {mass_residual:.6e}")
+    print(f"constant-state Linf      : {const_linf:.6e}")
+    print(f"constant-state physical L2: {const_l2:.6e}")
+    print(f"constant-state global int: {const_global:.6e}")
+    print(f"random-state scaled mass : {(random_mass_residual / random_mass_scale):.6e}")
 
     if status.numba_available:
         rhs_nb = full_rhs(q, full, use_numba=True)
