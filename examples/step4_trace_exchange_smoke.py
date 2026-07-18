@@ -1,6 +1,16 @@
 from __future__ import annotations
 
+import argparse
+from pathlib import Path
+import sys
+
 import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
 from simplex_dg.backends import backend_status
 from simplex_dg.geometry import build_geometry_cache
@@ -14,7 +24,14 @@ from simplex_dg.trace import (
 )
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Trace exchange smoke test.")
+    parser.add_argument("--table", type=str, default="table1", choices=["table1", "table2"])
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = parse_args()
     status = backend_status()
 
     print("Backend status")
@@ -24,7 +41,7 @@ def main() -> None:
     print(f"JAX devices    : {status.jax_devices}")
     print()
 
-    ref = build_reference_cache(order=4, table="table1")
+    ref = build_reference_cache(order=4, table=args.table)
     mesh = build_octa_sphere_mesh(ndivs=4, radius=1.0)
     conn = build_connectivity_cache_from_mesh(mesh)
     geom = build_geometry_cache(mesh, ref)
@@ -35,6 +52,7 @@ def main() -> None:
     print(f"K                  : {trace.n_elements}")
     print(f"Np                 : {trace.n_points}")
     print(f"Nf                 : {trace.n_face_points}")
+    print(f"table              : {ref.table}")
     print(f"face_interp shape  : {trace.face_interp.shape}")
     print(f"boundary faces     : {np.count_nonzero(trace.is_boundary)}")
     print(f"face flips         : {np.count_nonzero(trace.face_flip)}")
