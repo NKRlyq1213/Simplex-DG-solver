@@ -1,6 +1,15 @@
 from __future__ import annotations
 
+from pathlib import Path
+import sys
+
 import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
 from simplex_dg.backends import backend_status
 from simplex_dg.diagnostics import error_report
@@ -12,7 +21,7 @@ from simplex_dg.problems import (
     gaussian_on_sphere,
 )
 from simplex_dg.reference import build_reference_cache
-from simplex_dg.rhs import build_full_rhs_cache, full_rhs_split
+from simplex_dg.rhs import build_full_rhs_cache, full_rhs
 from simplex_dg.time import (
     cfl_dt_from_geometry,
     integrate_lsrk54,
@@ -48,7 +57,6 @@ def main() -> None:
         trace=trace,
         omega=omega,
         flux_type="upwind",
-        constant_preserving=True,
     )
 
     center0 = (radius, 0.0, 0.0)
@@ -71,7 +79,7 @@ def main() -> None:
     tf = 5.0
 
     def rhs(t, q):
-        return full_rhs_split(q, full, use_numba=True)
+        return full_rhs(q, full, use_numba=True)
 
     result = integrate_lsrk54(
         rhs=rhs,
@@ -114,6 +122,7 @@ def main() -> None:
     print(f"initial center       : ({center0[0]:+.6e}, {center0[1]:+.6e}, {center0[2]:+.6e})")
     print(f"exact center(tf)     : ({center_t[0]:+.6e}, {center_t[1]:+.6e}, {center_t[2]:+.6e})")
     print(f"sigma                : {sigma:.6e}")
+    print(f"volume form          : {full.volume_form}")
     print(f"dt                   : {dt:.6e}")
     print(f"tf                   : {tf:.6e}")
     print(f"nsteps               : {result.nsteps}")

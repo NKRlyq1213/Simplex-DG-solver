@@ -9,7 +9,7 @@ from simplex_dg.problems import (
     gaussian_on_sphere,
 )
 from simplex_dg.reference import build_reference_cache
-from simplex_dg.rhs import build_full_rhs_cache, full_rhs_split
+from simplex_dg.rhs import build_full_rhs_cache, full_rhs
 from simplex_dg.time import cfl_dt_from_geometry, integrate_lsrk54, manifold_integral
 from simplex_dg.trace import build_trace_cache
 
@@ -26,7 +26,6 @@ def _build_case(ndivs=2, order=3):
         trace=trace,
         omega=(0.0, 0.0, 1.0),
         flux_type="upwind",
-        constant_preserving=True,
     )
 
     return mesh, ref, geom, trace, full
@@ -88,7 +87,7 @@ def test_gaussian_short_run_error_is_finite():
     tf = 1.0
 
     def rhs(t, q):
-        return full_rhs_split(q, full, use_numba=False)
+        return full_rhs(q, full, use_numba=False)
 
     result = integrate_lsrk54(rhs, q0, 0.0, tf, dt)
 

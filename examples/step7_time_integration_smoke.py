@@ -1,6 +1,15 @@
 from __future__ import annotations
 
+from pathlib import Path
+import sys
+
 import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
 from simplex_dg.backends import backend_status
 from simplex_dg.diagnostics import error_report
@@ -8,7 +17,7 @@ from simplex_dg.geometry import build_geometry_cache
 from simplex_dg.mesh import build_connectivity_cache_from_mesh, build_octa_sphere_mesh
 from simplex_dg.problems import exact_gaussian_solid_body, gaussian_on_sphere
 from simplex_dg.reference import build_reference_cache
-from simplex_dg.rhs import build_full_rhs_cache, full_rhs_split
+from simplex_dg.rhs import build_full_rhs_cache, full_rhs
 from simplex_dg.time import (
     cfl_dt_from_geometry,
     integrate_lsrk54,
@@ -46,12 +55,12 @@ def main() -> None:
         trace=trace,
         omega=omega,
         flux_type="upwind",
-        constant_preserving=True,
     )
 
     q_const = np.ones((mesh.elements.shape[0], ref.rs.shape[0]))
-    rhs_const = full_rhs_split(q_const, full, use_numba=True)
+    rhs_const = full_rhs(q_const, full, use_numba=True)
     const_rhs_error = np.max(np.abs(rhs_const))
+    const_mass_residual = manifold_integral(rhs_const, ref, geom)
 
     q0 = gaussian_on_sphere(
         X=geom.X,
@@ -70,7 +79,7 @@ def main() -> None:
     tf = 5.0
 
     def rhs(t, q):
-        return full_rhs_split(q, full, use_numba=True)
+        return full_rhs(q, full, use_numba=True)
 
     def monitor(t, q):
         return mass_history_entry(t, q, ref, geom)
@@ -109,11 +118,13 @@ def main() -> None:
     print(f"initial field      : Gaussian on sphere")
     print(f"initial center     : ({center0[0]:+.6e}, {center0[1]:+.6e}, {center0[2]:+.6e})")
     print(f"sigma              : {sigma:.6e}")
+    print(f"volume form        : {full.volume_form}")
     print(f"dt                 : {dt:.6e}")
     print(f"tf                 : {tf:.6e}")
     print(f"nsteps             : {result.nsteps}")
     print(f"final t            : {result.t:.6e}")
     print(f"constant RHS max   : {const_rhs_error:.6e}")
+    print(f"constant mass RHS  : {const_mass_residual:+.12e}")
     print()
 
     print("Monitors")

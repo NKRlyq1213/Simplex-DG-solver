@@ -1,24 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import importlib
 
 import numpy as np
 
 from simplex_dg.geometry import GeometryCache
 from simplex_dg.reference import ReferenceCache
 from simplex_dg.reference.basis import vandermonde2d
-from simplex_dg.rhs.volume import VolumeRHSCache, project_to_tangent, solid_body_rotation_velocity
+from simplex_dg.rhs.volume import VolumeRHSCache, project_to_tangent
 from simplex_dg.trace import FaceTraces, TraceCache, gather_neighbor_traces
-
-
-try:
-    _numba = importlib.import_module("numba")
-    njit = _numba.njit
-    _NUMBA_AVAILABLE = True
-except Exception:
-    njit = None
-    _NUMBA_AVAILABLE = False
 
 
 _FLUX_TO_ID = {
@@ -48,14 +38,6 @@ class SurfaceRHSCache:
     flux_type: str
     flux_id: int
     lf_alpha: float
-
-
-def _should_use_numba(use_numba: bool | None) -> bool:
-    if use_numba is None:
-        return _NUMBA_AVAILABLE
-    return bool(use_numba) and _NUMBA_AVAILABLE
-
-
 def flux_id_from_name(flux_type: str) -> int:
     key = flux_type.lower().strip()
 
@@ -385,7 +367,7 @@ def surface_lift_correction_projected_flux(
 
         p = F_{n,P}^- - F_n^*(q_P^-, q_P^+),
 
-    where q_P^\pm are already supplied through FaceTraces and
+    where q_P plus/minus values are already supplied through FaceTraces and
     F_{n,P}^- is obtained by projecting alpha*q and beta*q to the face.
 
     The projector is not applied to p.
@@ -527,119 +509,6 @@ def surface_lift_correction_split_projected_flux(
     )
 
     correction = line_flux_m - flux_star_line
-
-    surface.fill(0.0)
-
-    for f in range(cache.n_faces):
-        surface += correction[:, f, :] @ cache.lift[f].T
-
-    surface /= cache.sqrt_g
-
-    return surface
-
-
-
-if _NUMBA_AVAILABLE:
-    @njit(cache=True)
-    def _surface_lift_correction_kernel(
-        qM,
-        qP,
-        lift,
-        sqrt_g,
-        face_jacobian,
-        normal_velocity,
-        flux_id,
-        lf_alpha,
-        out,
-    ):
-        K = qM.shape[0]
-        n_faces = qM.shape[1]
-        Nf = qM.shape[2]
-        Np = sqrt_g.shape[1]
-
-        for k in range(K):
-            for i in range(Np):
-                acc = 0.0
-
-                for f in range(n_faces):
-                    for j in range(Nf):
-                        un = normal_velocity[k, f, j]
-                        qm = qM[k, f, j]
-                        qp = qP[k, f, j]
-
-                        flux_m = un * qm
-
-                        if flux_id == 0:
-                            flux_star = 0.5 * un * (qm + qp)
-                        elif flux_id == 1:
-                            if un >= 0.0:
-                                flux_star = un * qm
-                            else:
-                                flux_star = un * qp
-                        else:
-                            flux_star = 0.5 * un * (qm + qp) - 0.5 * lf_alpha * abs(un) * (qp - qm)
-
-                        correction = flux_m - flux_star
-                        acc += lift[f, i, j] * face_jacobian[k, f, j] * correction
-
-                out[k, i] = acc / sqrt_g[k, i]
-
-else:
-    _surface_lift_correction_kernel = None
-
-
-def surface_lift_correction(
-    traces: FaceTraces,
-    cache: SurfaceRHSCache,
-    out: np.ndarray | None = None,
-    use_numba: bool | None = None,
-) -> np.ndarray:
-    """Legacy geometric surface correction.
-
-    This routine uses face_jacobian * normal_velocity * qM and is retained
-    for compatibility with older examples/tests. It is not the conservative
-    projected-SBP correction used by full_rhs_split.
-    """
-    qM = np.asarray(traces.qM, dtype=float)
-    qP = np.asarray(traces.qP, dtype=float)
-
-    expected_face = (cache.n_elements, cache.n_faces, cache.n_face_points)
-    expected_vol = (cache.n_elements, cache.n_points)
-
-    if qM.shape != expected_face or qP.shape != expected_face:
-        raise ValueError(f"qM and qP must have shape {expected_face}.")
-
-    if out is None:
-        surface = np.empty(expected_vol, dtype=float)
-    else:
-        surface = np.asarray(out, dtype=float)
-        if surface.shape != expected_vol:
-            raise ValueError("out has wrong shape.")
-
-    if _should_use_numba(use_numba):
-        _surface_lift_correction_kernel(
-            qM,
-            qP,
-            cache.lift,
-            cache.sqrt_g,
-            cache.face_jacobian,
-            cache.normal_velocity,
-            cache.flux_id,
-            cache.lf_alpha,
-            surface,
-        )
-        return surface
-
-    flux_m = cache.normal_velocity * qM
-    flux_star = numerical_flux(
-        qM=qM,
-        qP=qP,
-        normal_velocity=cache.normal_velocity,
-        flux_id=cache.flux_id,
-        lf_alpha=cache.lf_alpha,
-    )
-
-    correction = cache.face_jacobian * (flux_m - flux_star)
 
     surface.fill(0.0)
 

@@ -17,7 +17,6 @@ from simplex_dg.rhs.surface import (
     compute_face_velocity,
     flux_id_from_name,
     numerical_flux,
-    surface_lift_correction,
     surface_lift_correction_projected_flux,
     surface_lift_correction_split_projected_flux,
     projected_line_velocity,
@@ -27,6 +26,7 @@ from simplex_dg.rhs.surface import (
 from simplex_dg.rhs.full import (
     FullRHSCache,
     build_full_rhs_cache,
+    full_rhs,
     full_rhs_split,
 )
 
@@ -47,7 +47,6 @@ __all__ = [
     "compute_face_velocity",
     "flux_id_from_name",
     "numerical_flux",
-    "surface_lift_correction",
     "surface_lift_correction_projected_flux",
     "surface_lift_correction_split_projected_flux",
     "projected_line_velocity",
@@ -55,5 +54,6 @@ __all__ = [
     "validate_surface_rhs_cache",
     "FullRHSCache",
     "build_full_rhs_cache",
+    "full_rhs",
     "full_rhs_split",
 ]

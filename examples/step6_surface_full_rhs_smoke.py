@@ -1,6 +1,15 @@
 from __future__ import annotations
 
+from pathlib import Path
+import sys
+
 import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
 from simplex_dg.backends import backend_status
 from simplex_dg.geometry import build_geometry_cache
@@ -8,8 +17,10 @@ from simplex_dg.mesh import build_connectivity_cache_from_mesh, build_octa_spher
 from simplex_dg.reference import build_reference_cache
 from simplex_dg.rhs import (
     build_full_rhs_cache,
-    full_rhs_split,
-    surface_lift_correction,
+    full_rhs,
+    surface_lift_correction_projected_flux,
+    surface_lift_correction_split_projected_flux,
+    volume_divergence_conservative,
     volume_divergence_split,
 )
 from simplex_dg.trace import build_trace_cache, pair_face_traces
@@ -37,14 +48,19 @@ def main() -> None:
         trace=trace,
         omega=(0.0, 0.0, 1.0),
         flux_type="upwind",
+        volume_form="conservative",
     )
 
     q = geom.X[:, :, 0] + 0.25 * geom.X[:, :, 1] - 0.5 * geom.X[:, :, 2]
 
     traces = pair_face_traces(q, trace)
-    div = volume_divergence_split(q, full.volume)
-    surf = surface_lift_correction(traces, full.surface)
-    rhs = full_rhs_split(q, full)
+    if full.volume_form == "conservative":
+        div = volume_divergence_conservative(q, full.volume)
+        surf = surface_lift_correction_projected_flux(q, traces, full.volume, full.surface, full.trace)
+    else:
+        div = volume_divergence_split(q, full.volume)
+        surf = surface_lift_correction_split_projected_flux(q, traces, full.volume, full.surface, full.trace)
+    rhs = full_rhs(q, full)
 
     print("Full RHS cache")
     print("--------------")
@@ -52,6 +68,7 @@ def main() -> None:
     print(f"Np                       : {ref.rs.shape[0]}")
     print(f"Nf                       : {ref.edge_rules[1].n_points}")
     print(f"flux type                : {full.surface.flux_type}")
+    print(f"volume form              : {full.volume_form}")
     print(f"max speed volume         : {full.volume.max_speed:.6e}")
     print(f"normal velocity min/max  : {full.surface.normal_velocity.min():+.6e}, {full.surface.normal_velocity.max():+.6e}")
     print(f"lift shape               : {full.surface.lift.shape}")
@@ -66,7 +83,7 @@ def main() -> None:
     print(f"rhs - (-div+surf) max abs: {np.max(np.abs(rhs - (-div + surf))):.6e}")
 
     if status.numba_available:
-        rhs_nb = full_rhs_split(q, full, use_numba=True)
+        rhs_nb = full_rhs(q, full, use_numba=True)
         diff = np.max(np.abs(rhs_nb - rhs))
 
         print()
