@@ -385,7 +385,26 @@ def print_table(rows: list[MetricDivergenceRow]) -> None:
     print()
 
 
-def parse_args() -> argparse.Namespace:
+def _normalize_expr_option_args(argv: list[str]) -> list[str]:
+    normalized: list[str] = []
+    expr_options = {"--alpha0", "--u0"}
+    i = 0
+
+    while i < len(argv):
+        token = argv[i]
+
+        if token in expr_options and i + 1 < len(argv):
+            normalized.append(f"{token}={argv[i + 1]}")
+            i += 2
+            continue
+
+        normalized.append(token)
+        i += 1
+
+    return normalized
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Check convergence of the metric-divergence defect "
@@ -444,7 +463,10 @@ def parse_args() -> argparse.Namespace:
         help="Do not project the velocity field onto the tangent plane.",
     )
 
-    return parser.parse_args()
+    if argv is None:
+        argv = sys.argv[1:]
+
+    return parser.parse_args(_normalize_expr_option_args(list(argv)))
 
 
 def main() -> int:
