@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import argparse
 import ast
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+import json
 import operator
 from pathlib import Path
+import subprocess
 import sys
 import time
 
@@ -75,6 +78,15 @@ class PlotTimeAxis:
     xlabel: str
 
 
+@dataclass(frozen=True)
+class RunOneNdivResult:
+    row: ConvergenceRow
+    history: list[dict[str, float]]
+    q0: np.ndarray
+    q_final: np.ndarray
+    q_exact: np.ndarray
+
+
 def parse_float_expr(value: str) -> float:
     """Parse CLI float expressions such as 1.0, -0.5, pi/4, -pi/4."""
     if isinstance(value, (float, int)):
@@ -118,9 +130,32 @@ def rotation_axis_from_alpha0(alpha0: float) -> tuple[float, float, float]:
     """
     return (
         -float(np.sin(alpha0)),
-        0,
+        0.0,
         float(np.cos(alpha0)),
     )
+
+
+def resolve_sigma_physical(
+    *,
+    radius: float,
+    sigma_angle: float,
+    sigma_physical: float | None = None,
+) -> float:
+    radius = float(radius)
+    sigma_angle = float(sigma_angle)
+
+    if radius <= 0.0:
+        raise ValueError("radius must be positive.")
+
+    if sigma_physical is not None:
+        sigma = float(sigma_physical)
+    else:
+        sigma = radius * sigma_angle
+
+    if sigma <= 0.0:
+        raise ValueError("sigma_physical must be positive.")
+
+    return sigma
 
 
 def validate_ndivs(ndivs: list[int]) -> list[int]:
@@ -141,6 +176,68 @@ def validate_ndivs(ndivs: list[int]) -> list[int]:
     return out
 
 
+def _normalize_expr_option_args(argv: list[str]) -> list[str]:
+    normalized: list[str] = []
+    expr_options = {
+        "--cfl",
+        "--tf",
+        "--sigma",
+        "--sigma-physical",
+        "--amplitude",
+        "--height",
+        "--radius",
+        "--R",
+        "--alpha0",
+        "--u0",
+        "--lf-alpha",
+        "--lf-lambda",
+    }
+    i = 0
+
+    while i < len(argv):
+        token = argv[i]
+
+        if token in expr_options and i + 1 < len(argv):
+            normalized.append(f"{token}={argv[i + 1]}")
+            i += 2
+            continue
+
+        normalized.append(token)
+        i += 1
+
+    return normalized
+
+
+def current_git_commit() -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return "unknown"
+
+    commit = result.stdout.strip()
+    return commit or "unknown"
+
+
+def metadata_path_from_output(output_path: Path) -> Path:
+    return output_path.with_name(f"{output_path.stem}_metadata.json")
+
+
+def write_metadata_json(path: str | Path, metadata: dict[str, object]) -> Path:
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with output_path.open("w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2, sort_keys=True)
+        f.write("\n")
+
+    return output_path
+
+
 def run_one_ndiv(
     *,
     ndivs: int,
@@ -158,7 +255,8 @@ def run_one_ndiv(
     volume_form: str,
     use_numba: bool,
     history_every: int,
-) -> tuple[ConvergenceRow, list[dict[str, float]]]:
+) -> RunOneNdivResult:
+    start = time.perf_counter()
     axis = rotation_axis_from_alpha0(alpha0)
     omega = tuple(float(u0) * a for a in axis)
     center0 = (radius, 0.0, 0.0)
@@ -233,6 +331,8 @@ def run_one_ndiv(
         # Signed relative errors / ??????
         signed_relative_mass_error = (mass_t - mass0_ref) / mass0_denom
         signed_relative_energy_error = (energy_t - energy0_ref) / energy0_denom
+        q_min = float(np.min(q))
+        q_max = float(np.max(q))
 
         return {
             "ndivs": float(ndivs),
@@ -247,6 +347,10 @@ def run_one_ndiv(
             "relative_energy_error": relative_energy_error,
             "signed_relative_mass_error": signed_relative_mass_error,
             "signed_relative_energy_error": signed_relative_energy_error,
+            "q_min": q_min,
+            "q_max": q_max,
+            "undershoot": min(0.0, q_min),
+            "overshoot": max(0.0, q_max - float(amplitude)),
         }
 
     result = integrate_lsrk54(
@@ -276,6 +380,16 @@ def run_one_ndiv(
 
     l20 = manifold_l2_norm(q0, ref, geom)
     l2f = manifold_l2_norm(result.q, ref, geom)
+    energy0 = 0.5 * l20 * l20
+    energyf = 0.5 * l2f * l2f
+    mass0_denom = max(abs(mass0), np.finfo(float).tiny)
+    energy0_denom = max(abs(energy0), np.finfo(float).tiny)
+    q_min = float(np.min(result.q))
+    q_max = float(np.max(result.q))
+    elapsed_seconds = time.perf_counter() - start
+
+    relative_mass_drift = (massf - mass0) / mass0_denom
+    relative_energy_drift = (energyf - energy0) / energy0_denom
 
     row = ConvergenceRow(
         ndivs=ndivs,
@@ -290,11 +404,30 @@ def run_one_ndiv(
         l2_error=rep.l2_error,
         relative_l2_error=rep.relative_l2_error,
         linf_error=rep.linf_error,
-        mass_drift=(massf - mass0) / mass0,
+        mass_drift=relative_mass_drift,
         l2_norm_drift=l2f - l20,
+        initial_mass=mass0,
+        final_mass=massf,
+        absolute_mass_drift=abs(massf - mass0),
+        relative_mass_drift=relative_mass_drift,
+        initial_energy=energy0,
+        final_energy=energyf,
+        absolute_energy_drift=abs(energyf - energy0),
+        relative_energy_drift=relative_energy_drift,
+        q_min=q_min,
+        q_max=q_max,
+        undershoot=min(0.0, q_min),
+        overshoot=max(0.0, q_max - float(amplitude)),
+        elapsed_seconds=elapsed_seconds,
     )
 
-    return row, result.history
+    return RunOneNdivResult(
+        row=row,
+        history=result.history,
+        q0=q0,
+        q_final=result.q,
+        q_exact=q_exact,
+    )
 
 
 def history_time_span(histories: list[list[dict[str, float]]]) -> float:
@@ -524,13 +657,45 @@ def plot_observed_order(
     plt.close(fig)
 
 
+def plot_solution_bounds_history(
+    histories: dict[int, list[dict[str, float]]],
+    output_path: Path,
+    *,
+    amplitude: float,
+    plot_time_unit: str = "auto",
+) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    time_axis = resolve_history_time_axis(list(histories.values()), plot_time_unit=plot_time_unit)
+
+    fig, ax = plt.subplots(figsize=(8.0, 5.0))
+
+    for ndivs, hist in sorted(histories.items()):
+        t = np.array([entry["t"] for entry in hist], dtype=float) / time_axis.scale
+        q_min = np.array([entry["q_min"] for entry in hist], dtype=float)
+        q_max = np.array([entry["q_max"] for entry in hist], dtype=float)
+        ax.plot(t, q_min, linewidth=1.2, label=f"q_min ndiv {ndivs}")
+        ax.plot(t, q_max, linewidth=1.2, linestyle="--", label=f"q_max ndiv {ndivs}")
+
+    ax.axhline(0.0, linestyle=":", linewidth=1.0, color="black")
+    ax.axhline(float(amplitude), linestyle=":", linewidth=1.0, color="gray")
+    ax.set_xlabel(time_axis.xlabel)
+    ax.set_ylabel("solution bounds")
+    ax.set_title("Gaussian solution bounds history")
+    ax.grid(True, linestyle="--", linewidth=0.5)
+    ax.legend(ncol=2)
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=200)
+    plt.close(fig)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Gaussian solid-body advection convergence runner.")
 
     run_group = parser.add_argument_group("mesh/run control")
     run_group.add_argument("--ndivs", nargs="+", type=int, default=[1, 2, 4, 8])
     run_group.add_argument("--order", type=int, default=4)
-    run_group.add_argument("--table", type=str, default="table1")
+    run_group.add_argument("--table", type=str, default="table1", choices=["table1", "table2"])
     run_group.add_argument("--cfl", type=float, default=1.0)
     run_group.add_argument("--tf", type=float, default=1.0)
     run_group.add_argument("--history-every", type=int, default=1)
@@ -606,7 +771,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    if argv is None:
+        argv = sys.argv[1:]
+
+    args = parser.parse_args(_normalize_expr_option_args(list(argv)))
 
     try:
         args.ndivs = validate_ndivs(args.ndivs)
@@ -622,10 +790,10 @@ def main() -> None:
     rows: list[ConvergenceRow] = []
     histories: dict[int, list[dict[str, float]]] = {}
 
-    sigma_physical = (
-        float(args.sigma_physical)
-        if args.sigma_physical is not None
-        else float(args.radius) * float(args.sigma)
+    sigma_physical = resolve_sigma_physical(
+        radius=args.radius,
+        sigma_angle=args.sigma,
+        sigma_physical=args.sigma_physical,
     )
 
     print("Gaussian convergence run")
@@ -653,7 +821,7 @@ def main() -> None:
     for ndivs in args.ndivs:
         start = time.perf_counter()
 
-        row, history = run_one_ndiv(
+        result = run_one_ndiv(
             ndivs=ndivs,
             order=args.order,
             table=args.table,
@@ -671,15 +839,16 @@ def main() -> None:
             history_every=args.history_every,
         )
 
+        row = result.row
         rows.append(row)
-        histories[ndivs] = history
+        histories[ndivs] = result.history
 
         elapsed = time.perf_counter() - start
 
         print(
             f"ndivs={ndivs}, K={row.n_elements}, DOFs={row.total_dofs}, "
             f"L2={row.l2_error:.6e}, rel={row.relative_l2_error:.6e}, "
-            f"Linf={row.linf_error:.6e}, mass ref drift={row.mass_drift:+.6e}, "
+            f"Linf={row.linf_error:.6e}, mass ref drift={row.relative_mass_drift:+.6e}, "
             f"time={elapsed:.2f}s"
         )
 
@@ -688,20 +857,46 @@ def main() -> None:
 
     output = Path(args.output)
     write_convergence_csv(output, rows)
+    metadata = {
+        "table": args.table,
+        "order": args.order,
+        "ndivs": args.ndivs,
+        "cfl_requested": float(args.cfl),
+        "tf": float(args.tf),
+        "sigma_angle": float(args.sigma),
+        "sigma_physical": float(sigma_physical),
+        "amplitude": float(args.amplitude),
+        "radius": float(args.radius),
+        "alpha0": float(args.alpha0),
+        "u0": float(args.u0),
+        "omega": list(rotation_axis_from_alpha0(args.alpha0)),
+        "flux": args.flux,
+        "lf_alpha": float(args.lf_alpha),
+        "form": args.form,
+        "use_numba": bool(not args.no_numba),
+        "history_every": int(args.history_every),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "git_commit": current_git_commit(),
+    }
+    metadata["omega"] = [float(args.u0) * float(component) for component in metadata["omega"]]
+    metadata_output = metadata_path_from_output(output)
+    write_metadata_json(metadata_output, metadata)
 
     print()
     print(f"CSV written to: {output}")
+    print(f"Metadata written to: {metadata_output}")
 
     if not args.no_plots:
         plot_dir = Path(args.plot_dir)
         plot_dir.mkdir(parents=True, exist_ok=True)
 
-        time_plot = plot_dir / "gaussian_error_time_history.png"
-        mass_plot = plot_dir / "gaussian_rel_mass_error_history.png"
-        energy_plot = plot_dir / "gaussian_rel_energy_error_history.png"
-        signed_energy_plot = plot_dir / "gaussian_signed_rel_energy_error_history.png"
-        conv_plot = plot_dir / "gaussian_error_convergence.png"
-        order_plot = plot_dir / "gaussian_observed_order.png"
+        time_plot = plot_dir / "relative_l2_history.png"
+        mass_plot = plot_dir / "relative_mass_history.png"
+        energy_plot = plot_dir / "relative_energy_history.png"
+        signed_energy_plot = plot_dir / "signed_energy_history.png"
+        bounds_plot = plot_dir / "solution_bounds_history.png"
+        conv_plot = plot_dir / "error_convergence.png"
+        order_plot = plot_dir / "observed_order.png"
 
         plot_time_history_quantity(
             histories=histories,
@@ -733,17 +928,6 @@ def main() -> None:
             plot_time_unit=args.plot_time_unit,
         )
 
-        signed_energy_level_plots = plot_time_history_quantity_each_level(
-            histories=histories,
-            output_dir=plot_dir,
-            filename_prefix="gaussian_signed_rel_energy_error_history",
-            quantity="signed_relative_energy_error",
-            ylabel="signed relative energy error",
-            title_prefix="Signed relative energy error history",
-            semilogy=False,
-            plot_time_unit=args.plot_time_unit,
-        )
-
         plot_time_history_quantity(
             histories=histories,
             output_path=signed_energy_plot,
@@ -751,6 +935,13 @@ def main() -> None:
             ylabel="signed relative energy error",
             title="Signed relative energy error history",
             semilogy=False,
+            plot_time_unit=args.plot_time_unit,
+        )
+
+        plot_solution_bounds_history(
+            histories=histories,
+            output_path=bounds_plot,
+            amplitude=float(args.amplitude),
             plot_time_unit=args.plot_time_unit,
         )
 
@@ -769,9 +960,8 @@ def main() -> None:
         print(f"  {time_plot}")
         print(f"  {mass_plot}")
         print(f"  {energy_plot}")
-        for signed_energy_level_plot in signed_energy_level_plots:
-            print(f"  {signed_energy_level_plot}")
         print(f"  {signed_energy_plot}")
+        print(f"  {bounds_plot}")
         print(f"  {conv_plot}")
         print(f"  {order_plot}")
 

@@ -23,6 +23,19 @@ class ConvergenceRow:
     linf_error: float
     mass_drift: float
     l2_norm_drift: float
+    initial_mass: float = 0.0
+    final_mass: float = 0.0
+    absolute_mass_drift: float = 0.0
+    relative_mass_drift: float = 0.0
+    initial_energy: float = 0.0
+    final_energy: float = 0.0
+    absolute_energy_drift: float = 0.0
+    relative_energy_drift: float = 0.0
+    q_min: float = 0.0
+    q_max: float = 0.0
+    undershoot: float = 0.0
+    overshoot: float = 0.0
+    elapsed_seconds: float = 0.0
 
 
 def estimate_convergence_rates(values: list[float], hmins: list[float]) -> list[float | None]:
@@ -89,6 +102,7 @@ def format_convergence_table(rows: list[ConvergenceRow]) -> str:
     headers = [
         "ndivs",
         "K",
+        "Nq",
         "DOFs",
         "dt",
         "steps",
@@ -96,26 +110,36 @@ def format_convergence_table(rows: list[ConvergenceRow]) -> str:
         "L2 err",
         "rate",
         "rel L2",
+        "rate",
         "Linf",
-        "mass drift",
-        "L2 drift",
+        "rate",
+        "rel mass",
+        "rel energy",
+        "qmin",
+        "qmax",
     ]
 
     lines = []
     lines.append(
-        f"{headers[0]:>5} {headers[1]:>6} {headers[2]:>8} "
-        f"{headers[3]:>11} {headers[4]:>7} {headers[5]:>11} "
-        f"{headers[6]:>12} {headers[7]:>8} {headers[8]:>12} "
-        f"{headers[9]:>12} {headers[10]:>12} {headers[11]:>12}"
+        f"{headers[0]:>5} {headers[1]:>6} {headers[2]:>4} {headers[3]:>8} "
+        f"{headers[4]:>11} {headers[5]:>7} {headers[6]:>11} "
+        f"{headers[7]:>12} {headers[8]:>8} {headers[9]:>12} {headers[10]:>8} "
+        f"{headers[11]:>12} {headers[12]:>8} {headers[13]:>12} "
+        f"{headers[14]:>12} {headers[15]:>10} {headers[16]:>10}"
     )
 
     for d in dicts:
         rate = d["l2_rate"]
         rate_s = "" if rate == "" else f"{float(rate):.3f}"
+        rel_rate = d["relative_l2_rate"]
+        rel_rate_s = "" if rel_rate == "" else f"{float(rel_rate):.3f}"
+        linf_rate = d["linf_rate"]
+        linf_rate_s = "" if linf_rate == "" else f"{float(linf_rate):.3f}"
 
         lines.append(
             f"{int(d['ndivs']):5d} "
             f"{int(d['n_elements']):6d} "
+            f"{int(d['n_points_per_element']):4d} "
             f"{int(d['total_dofs']):8d} "
             f"{float(d['dt']):11.4e} "
             f"{int(d['nsteps']):7d} "
@@ -123,9 +147,13 @@ def format_convergence_table(rows: list[ConvergenceRow]) -> str:
             f"{float(d['l2_error']):12.4e} "
             f"{rate_s:>8} "
             f"{float(d['relative_l2_error']):12.4e} "
+            f"{rel_rate_s:>8} "
             f"{float(d['linf_error']):12.4e} "
-            f"{float(d['mass_drift']):12.4e} "
-            f"{float(d['l2_norm_drift']):12.4e}"
+            f"{linf_rate_s:>8} "
+            f"{float(d['relative_mass_drift']):12.4e} "
+            f"{float(d['relative_energy_drift']):12.4e} "
+            f"{float(d['q_min']):10.4e} "
+            f"{float(d['q_max']):10.4e}"
         )
 
     return "\n".join(lines)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import tempfile
 
@@ -72,6 +73,7 @@ def test_parse_args_defaults_plot_time_unit_auto():
 
     assert args.plot_time_unit == "auto"
     assert args.ndivs == [1, 2, 4, 8]
+    assert args.table == "table1"
 
 
 @pytest.mark.parametrize("plot_time_unit", ["second", "minute", "hour", "day"])
@@ -92,6 +94,23 @@ def test_parse_args_accepts_custom_ndivs_sequences(ndivs_args: list[str]):
     args = step9.parse_args(ndivs_args)
 
     assert args.ndivs == [int(value) for value in ndivs_args[1:]]
+
+
+def test_parse_args_accepts_table2_and_expression_arguments():
+    args = step9.parse_args(
+        [
+            "--table",
+            "table2",
+            "--alpha0",
+            "-pi/4",
+            "--u0",
+            "2*pi/10",
+        ]
+    )
+
+    assert args.table == "table2"
+    assert args.alpha0 == pytest.approx(-np.pi / 4.0)
+    assert args.u0 == pytest.approx(2.0 * np.pi / 10.0)
 
 
 @pytest.mark.parametrize(
@@ -269,3 +288,25 @@ def test_plot_observed_order_uses_ndivs_on_x_axis(
 
     assert captured_labels[-1] == "ndivs"
     assert np.allclose(captured_x[0], [3.0])
+
+
+def test_metadata_sidecar_path_and_json_write():
+    with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmpdir:
+        output_path = Path(tmpdir) / "convergence.csv"
+        metadata_path = step9.metadata_path_from_output(output_path)
+
+        assert metadata_path.name == "convergence_metadata.json"
+
+        step9.write_metadata_json(
+            metadata_path,
+            {
+                "table": "table2",
+                "ndivs": [1, 2, 4],
+                "git_commit": "abc123",
+            },
+        )
+
+        data = json.loads(metadata_path.read_text(encoding="utf-8"))
+        assert data["table"] == "table2"
+        assert data["ndivs"] == [1, 2, 4]
+        assert data["git_commit"] == "abc123"
