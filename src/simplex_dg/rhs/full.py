@@ -9,11 +9,15 @@ from simplex_dg.reference import ReferenceCache
 from simplex_dg.rhs.surface import (
     SurfaceRHSCache,
     build_surface_rhs_cache,
-    surface_lift_correction,
     surface_lift_correction_projected_flux,
     surface_lift_correction_split_projected_flux,
 )
-from simplex_dg.rhs.volume import VolumeRHSCache, build_volume_rhs_cache, volume_divergence_split, volume_divergence_conservative
+from simplex_dg.rhs.volume import (
+    VolumeRHSCache,
+    build_volume_rhs_cache,
+    volume_divergence_conservative,
+    volume_divergence_split,
+)
 from simplex_dg.trace import TraceCache, pair_face_traces
 
 
@@ -22,7 +26,6 @@ class FullRHSCache:
     volume: VolumeRHSCache
     surface: SurfaceRHSCache
     trace: TraceCache
-    constant_preserving: bool
     volume_form: str
 
 
@@ -36,7 +39,6 @@ def build_full_rhs_cache(
     flux_type: str = "upwind",
     lf_alpha: float = 1.0,
     project_velocity: bool = True,
-    constant_preserving: bool = False,
     volume_form: str = "conservative",
     validate: bool = True,
 ) -> FullRHSCache:
@@ -74,17 +76,17 @@ def build_full_rhs_cache(
         volume=volume,
         surface=surface,
         trace=trace,
-        constant_preserving=bool(constant_preserving),
         volume_form=volume_form,
     )
 
 
-def full_rhs_split(
+def full_rhs(
     q: np.ndarray,
     cache: FullRHSCache,
     out: np.ndarray | None = None,
     use_numba: bool | None = None,
 ) -> np.ndarray:
+    """Evaluate the full semi-discrete RHS for the selected volume form."""
     q = np.asarray(q, dtype=float)
 
     expected = (cache.volume.n_elements, cache.volume.n_points)
@@ -105,39 +107,26 @@ def full_rhs_split(
         use_numba=use_numba,
     )
 
-    if cache.constant_preserving:
-        # On curved mapped elements, the discrete metric divergence is not
-        # exactly zero even for analytically divergence-free solid-body
-        # rotation. Keep the legacy geometric surface correction together with
-        # the local q*div_velocity compensation so constant states remain
-        # invariant under the full operator.
-        div = div - q * cache.volume.div_velocity
-        surf = surface_lift_correction(
+    if cache.volume_form == "split":
+        surf = surface_lift_correction_split_projected_flux(
+            q,
             traces,
+            cache.volume,
             cache.surface,
+            cache.trace,
+            use_numba=use_numba,
+        )
+    elif cache.volume_form == "conservative":
+        surf = surface_lift_correction_projected_flux(
+            q,
+            traces,
+            cache.volume,
+            cache.surface,
+            cache.trace,
             use_numba=use_numba,
         )
     else:
-        if cache.volume_form == "split":
-            surf = surface_lift_correction_split_projected_flux(
-                q,
-                traces,
-                cache.volume,
-                cache.surface,
-                cache.trace,
-                use_numba=use_numba,
-            )
-        elif cache.volume_form == "conservative":
-            surf = surface_lift_correction_projected_flux(
-                q,
-                traces,
-                cache.volume,
-                cache.surface,
-                cache.trace,
-                use_numba=use_numba,
-            )
-        else:
-            raise ValueError("cache.volume_form must be 'conservative' or 'split'.")
+        raise ValueError("cache.volume_form must be 'conservative' or 'split'.")
 
     if out is None:
         rhs = np.empty_like(q)
@@ -149,3 +138,6 @@ def full_rhs_split(
     rhs[:, :] = -div + surf
 
     return rhs
+
+
+full_rhs_split = full_rhs

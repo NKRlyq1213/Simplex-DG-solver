@@ -3,7 +3,7 @@ import numpy as np
 from simplex_dg.geometry import build_geometry_cache
 from simplex_dg.mesh import build_connectivity_cache_from_mesh, build_octa_sphere_mesh
 from simplex_dg.reference import build_reference_cache
-from simplex_dg.rhs import build_full_rhs_cache, full_rhs_split
+from simplex_dg.rhs import build_full_rhs_cache, full_rhs
 from simplex_dg.time import (
     cfl_dt,
     cfl_dt_from_geometry,
@@ -117,7 +117,7 @@ def test_zero_velocity_integration_preserves_state():
     q0 = rng.normal(size=(mesh.elements.shape[0], ref.rs.shape[0]))
 
     def rhs(t, q):
-        return full_rhs_split(q, full, use_numba=False)
+        return full_rhs(q, full, use_numba=False)
 
     result = integrate_lsrk54(rhs, q0, 0.0, 0.1, 0.01)
 
@@ -133,7 +133,7 @@ def test_short_full_rhs_run_is_finite():
     tf = 3.0 * dt
 
     def rhs(t, q):
-        return full_rhs_split(q, full, use_numba=False)
+        return full_rhs(q, full, use_numba=False)
 
     def monitor(t, q):
         return mass_history_entry(t, q, ref, geom)

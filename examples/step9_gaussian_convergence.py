@@ -28,7 +28,7 @@ from simplex_dg.geometry import build_geometry_cache
 from simplex_dg.mesh import build_connectivity_cache_from_mesh, build_octa_sphere_mesh
 from simplex_dg.problems import exact_gaussian_solid_body, gaussian_on_sphere
 from simplex_dg.reference import build_reference_cache
-from simplex_dg.rhs import build_full_rhs_cache, full_rhs_split
+from simplex_dg.rhs import build_full_rhs_cache, full_rhs
 from simplex_dg.time import (
     cfl_dt_from_geometry,
     integrate_lsrk54,
@@ -176,7 +176,6 @@ def run_one_ndiv(
         omega=omega,
         flux_type=flux_type,
         lf_alpha=lf_alpha,
-        constant_preserving=True,
         volume_form=volume_form,
     )
 
@@ -208,7 +207,7 @@ def run_one_ndiv(
     dt = float(tf / nsteps)
 
     def rhs(t, q):
-        return full_rhs_split(q, full, use_numba=use_numba)
+        return full_rhs(q, full, use_numba=use_numba)
 
     def monitor(t, q):
         q_exact_t = exact_gaussian_solid_body(

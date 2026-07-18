@@ -1,6 +1,15 @@
 from __future__ import annotations
 
+from pathlib import Path
+import sys
+
 import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
 from simplex_dg.backends import backend_status
 from simplex_dg.geometry import build_geometry_cache
