@@ -1,0 +1,36 @@
+{
+  "alpha0": -0.7853981633974483,
+  "amplitude": 1.0,
+  "definitions": {
+    "alpha": "alpha = J * u^r",
+    "beta": "beta = J * u^s",
+    "energy_residual": "0.5 * sum_K |T_hat| * sum_i w_i q_h (tau_r + tau_s)",
+    "physical_defect": "tau / J",
+    "tau_r": "D_r(alpha * q_h) - alpha * D_r q_h - q_h * D_r alpha",
+    "tau_s": "D_s(beta * q_h) - beta * D_s q_h - q_h * D_s beta",
+    "tau_sum": "tau_r + tau_s"
+  },
+  "git_commit": "b394a962af25d17a18c1af480d217fdc40b8ebeb",
+  "ndivs": [
+    4,
+    8,
+    16,
+    32,
+    64
+  ],
+  "omega": [
+    0.7071067811865476,
+    0.0,
+    0.7071067811865476
+  ],
+  "order": 4,
+  "project_velocity": true,
+  "radius": 1.0,
+  "rate_basis": "ndiv",
+  "sigma_angle": 0.35,
+  "sigma_physical": 0.35,
+  "state": "projected-gaussian",
+  "table": "table1",
+  "timestamp": "2026-07-22T13:32:00.229926+00:00",
+  "u0": 1.0
+}
