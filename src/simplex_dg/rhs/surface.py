@@ -6,7 +6,6 @@ import numpy as np
 
 from simplex_dg.geometry import GeometryCache
 from simplex_dg.reference import ReferenceCache
-from simplex_dg.reference.basis import vandermonde2d
 from simplex_dg.rhs.volume import VolumeRHSCache, project_to_tangent
 from simplex_dg.trace import FaceTraces, TraceCache, gather_neighbor_traces
 
@@ -48,6 +47,7 @@ def flux_id_from_name(flux_type: str) -> int:
 
 
 def build_lift_matrices(ref: ReferenceCache, trace: TraceCache) -> np.ndarray:
+    """Copy the variant-selected face lift from the reference cache."""
     lift = np.zeros(
         (trace.n_faces, trace.n_points, trace.n_face_points),
         dtype=float,
@@ -55,16 +55,7 @@ def build_lift_matrices(ref: ReferenceCache, trace: TraceCache) -> np.ndarray:
 
     for face_id in (1, 2, 3):
         f = face_id - 1
-        edge = ref.edge_rules[face_id]
-        V_face = vandermonde2d(ref.order, edge.rs[:, 0], edge.rs[:, 1])
-
-        # Maps face quadrature values to volume nodal values:
-        #
-        # nodal_lift = V_volume M^{-1} V_face^T W_face
-        #
-        # Geometry-dependent face_jacobian is not included here. It is applied
-        # at runtime because it is element-dependent.
-        lift[f] = (ref.V @ ref.Minv @ V_face.T) * edge.weights[None, :]
+        lift[f] = np.asarray(ref.face_lift[face_id], dtype=float)
 
     return lift
 

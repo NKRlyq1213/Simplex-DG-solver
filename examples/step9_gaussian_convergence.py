@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import json
@@ -30,7 +31,7 @@ from simplex_dg.diagnostics import (
 from simplex_dg.geometry import build_geometry_cache
 from simplex_dg.mesh import build_connectivity_cache_from_mesh, build_octa_sphere_mesh
 from simplex_dg.problems import exact_gaussian_solid_body, gaussian_on_sphere
-from simplex_dg.reference import build_reference_cache
+from simplex_dg.reference import SBPVariant, build_reference_cache, is_full_sbp_variant, normalize_sbp_variant
 from simplex_dg.rhs import build_full_rhs_cache, full_rhs
 from simplex_dg.time import (
     cfl_dt_from_geometry,
@@ -85,6 +86,9 @@ class RunOneNdivResult:
     q0: np.ndarray
     q_final: np.ndarray
     q_exact: np.ndarray
+
+
+_SBP_VARIANT_CHOICES = ("projected", "full-raw", "full-orth")
 
 
 def parse_float_expr(value: str) -> float:
@@ -227,6 +231,130 @@ def metadata_path_from_output(output_path: Path) -> Path:
     return output_path.with_name(f"{output_path.stem}_metadata.json")
 
 
+def validate_step9_configuration(*, table: str, sbp_variant: str) -> SBPVariant:
+    sbp_variant_norm = normalize_sbp_variant(sbp_variant)
+
+    if is_full_sbp_variant(sbp_variant_norm) and table != "table1":
+        raise ValueError(
+            "full-raw and full-orth require --table table1 because they use direct "
+            "extraction of Table 1 boundary volume nodes."
+        )
+
+    return sbp_variant_norm
+
+
+def scheme_identifier(
+    *,
+    table: str,
+    sbp_variant: str,
+    volume_form: str,
+    flux_type: str,
+) -> str:
+    sbp_variant_norm = normalize_sbp_variant(sbp_variant)
+    return f"{table}_{sbp_variant_norm}_{volume_form}_{flux_type}"
+
+
+def scheme_label(
+    *,
+    table: str,
+    sbp_variant: str,
+    volume_form: str,
+    flux_type: str,
+) -> str:
+    sbp_variant_norm = normalize_sbp_variant(sbp_variant)
+    return f"{table} / {sbp_variant_norm} / {volume_form} / {flux_type}"
+
+
+def output_path_for_scheme(
+    output_path: str | Path,
+    *,
+    table: str,
+    sbp_variant: str,
+    volume_form: str,
+    flux_type: str,
+) -> Path:
+    output = Path(output_path)
+    scheme_id = scheme_identifier(
+        table=table,
+        sbp_variant=sbp_variant,
+        volume_form=volume_form,
+        flux_type=flux_type,
+    )
+    stem = output.stem
+
+    if stem == scheme_id or stem.endswith(f"_{scheme_id}"):
+        return output
+
+    return output.with_name(f"{stem}_{scheme_id}{output.suffix}")
+
+
+def plot_dir_for_scheme(
+    plot_dir: str | Path,
+    *,
+    table: str,
+    sbp_variant: str,
+    volume_form: str,
+    flux_type: str,
+) -> Path:
+    output_dir = Path(plot_dir)
+    scheme_id = scheme_identifier(
+        table=table,
+        sbp_variant=sbp_variant,
+        volume_form=volume_form,
+        flux_type=flux_type,
+    )
+
+    if output_dir.name == scheme_id:
+        return output_dir
+
+    return output_dir / scheme_id
+
+
+def titled_scheme_plot(base_title: str, *, scheme_text: str) -> str:
+    return f"{base_title} [{scheme_text}]"
+
+
+def build_run_metadata(
+    *,
+    args: argparse.Namespace,
+    sigma_physical: float,
+    output_csv: Path,
+    plot_dir: Path | None,
+) -> dict[str, object]:
+    metadata = {
+        "table": args.table,
+        "sbp_variant": args.sbp,
+        "scheme_id": scheme_identifier(
+            table=args.table,
+            sbp_variant=args.sbp,
+            volume_form=args.form,
+            flux_type=args.flux,
+        ),
+        "order": args.order,
+        "ndivs": args.ndivs,
+        "cfl_requested": float(args.cfl),
+        "tf": float(args.tf),
+        "sigma_angle": float(args.sigma),
+        "sigma_physical": float(sigma_physical),
+        "amplitude": float(args.amplitude),
+        "radius": float(args.radius),
+        "alpha0": float(args.alpha0),
+        "u0": float(args.u0),
+        "omega": list(rotation_axis_from_alpha0(args.alpha0)),
+        "flux": args.flux,
+        "lf_alpha": float(args.lf_alpha),
+        "form": args.form,
+        "use_numba": bool(not args.no_numba),
+        "history_every": int(args.history_every),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "git_commit": current_git_commit(),
+        "output_csv": str(output_csv),
+        "plot_dir": None if plot_dir is None else str(plot_dir),
+    }
+    metadata["omega"] = [float(args.u0) * float(component) for component in metadata["omega"]]
+    return metadata
+
+
 def write_metadata_json(path: str | Path, metadata: dict[str, object]) -> Path:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -243,6 +371,7 @@ def run_one_ndiv(
     ndivs: int,
     order: int,
     table: str,
+    sbp_variant: SBPVariant | str = "projected",
     cfl: float,
     tf: float,
     sigma: float,
@@ -255,13 +384,15 @@ def run_one_ndiv(
     volume_form: str,
     use_numba: bool,
     history_every: int,
+    monitor_hook: Callable[[float, np.ndarray, dict[str, float]], None] | None = None,
 ) -> RunOneNdivResult:
     start = time.perf_counter()
+    sbp_variant_norm = validate_step9_configuration(table=table, sbp_variant=sbp_variant)
     axis = rotation_axis_from_alpha0(alpha0)
     omega = tuple(float(u0) * a for a in axis)
     center0 = (radius, 0.0, 0.0)
 
-    ref = build_reference_cache(order=order, table=table)
+    ref = build_reference_cache(order=order, table=table, sbp_variant=sbp_variant_norm)
     mesh = build_octa_sphere_mesh(ndivs=ndivs, radius=radius)
     conn = build_connectivity_cache_from_mesh(mesh)
     geom = build_geometry_cache(mesh, ref)
@@ -334,7 +465,7 @@ def run_one_ndiv(
         q_min = float(np.min(q))
         q_max = float(np.max(q))
 
-        return {
+        entry = {
             "ndivs": float(ndivs),
             "t": float(t),
             "l2_error": rep.l2_error,
@@ -352,6 +483,11 @@ def run_one_ndiv(
             "undershoot": min(0.0, q_min),
             "overshoot": max(0.0, q_max - float(amplitude)),
         }
+
+        if monitor_hook is not None:
+            monitor_hook(float(t), np.asarray(q, dtype=float), entry)
+
+        return entry
 
     result = integrate_lsrk54(
         rhs=rhs,
@@ -596,6 +732,8 @@ def plot_time_history_quantity_each_level(
 def plot_error_convergence(
     rows: list[ConvergenceRow],
     output_path: Path,
+    *,
+    title: str = "Gaussian advection convergence",
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -617,7 +755,7 @@ def plot_error_convergence(
 
     ax.set_xlabel("hmin")
     ax.set_ylabel("error")
-    ax.set_title("Gaussian advection convergence")
+    ax.set_title(title)
     ax.grid(True, which="both", linestyle="--", linewidth=0.5)
     ax.legend()
 
@@ -629,6 +767,8 @@ def plot_error_convergence(
 def plot_observed_order(
     rows: list[ConvergenceRow],
     output_path: Path,
+    *,
+    title: str = "Observed convergence order",
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -648,7 +788,7 @@ def plot_observed_order(
 
     ax.set_xlabel("ndivs")
     ax.set_ylabel("observed order")
-    ax.set_title("Observed convergence order")
+    ax.set_title(title)
     ax.grid(True, linestyle="--", linewidth=0.5)
     ax.legend()
 
@@ -662,6 +802,7 @@ def plot_solution_bounds_history(
     output_path: Path,
     *,
     amplitude: float,
+    title: str = "Gaussian solution bounds history",
     plot_time_unit: str = "auto",
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -680,7 +821,7 @@ def plot_solution_bounds_history(
     ax.axhline(float(amplitude), linestyle=":", linewidth=1.0, color="gray")
     ax.set_xlabel(time_axis.xlabel)
     ax.set_ylabel("solution bounds")
-    ax.set_title("Gaussian solution bounds history")
+    ax.set_title(title)
     ax.grid(True, linestyle="--", linewidth=0.5)
     ax.legend(ncol=2)
 
@@ -752,6 +893,17 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["conservative", "split"],
         help="Volume/surface pairing: conservative or split.",
     )
+    numerics_group.add_argument(
+        "--sbp",
+        type=str,
+        default="projected",
+        choices=_SBP_VARIANT_CHOICES,
+        help=(
+            "SBP variant: projected = existing projected-SBP differentiation, projected trace, "
+            "and polynomial lift; full-raw = Table 1 raw-basis full-SBP with direct extraction "
+            "and H^{-1}E^T W_b lift; full-orth = algebraically equivalent orthogonalized full-SBP construction."
+        ),
+    )
     numerics_group.add_argument("--no-numba", action="store_true")
 
     output_group = parser.add_argument_group("outputs/plots")
@@ -781,11 +933,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     except ValueError as exc:
         parser.error(str(exc))
 
+    try:
+        args.sbp = validate_step9_configuration(table=args.table, sbp_variant=args.sbp)
+    except ValueError as exc:
+        parser.error(str(exc))
+
     return args
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
 
     rows: list[ConvergenceRow] = []
     histories: dict[int, list[dict[str, float]]] = {}
@@ -801,6 +958,7 @@ def main() -> None:
     print(f"ndivs         : {args.ndivs}")
     print(f"order         : {args.order}")
     print(f"table         : {args.table}")
+    print(f"sbp           : {args.sbp}")
     print(f"cfl           : {args.cfl}")
     print(f"tf            : {args.tf}")
     print(f"sigma_angle   : {args.sigma}")
@@ -817,6 +975,12 @@ def main() -> None:
     print()
 
     t0 = time.perf_counter()
+    scheme_text = scheme_label(
+        table=args.table,
+        sbp_variant=args.sbp,
+        volume_form=args.form,
+        flux_type=args.flux,
+    )
 
     for ndivs in args.ndivs:
         start = time.perf_counter()
@@ -825,6 +989,7 @@ def main() -> None:
             ndivs=ndivs,
             order=args.order,
             table=args.table,
+            sbp_variant=args.sbp,
             cfl=args.cfl,
             tf=args.tf,
             sigma=sigma_physical,
@@ -855,30 +1020,27 @@ def main() -> None:
     print()
     print(format_convergence_table(rows))
 
-    output = Path(args.output)
+    output = output_path_for_scheme(
+        args.output,
+        table=args.table,
+        sbp_variant=args.sbp,
+        volume_form=args.form,
+        flux_type=args.flux,
+    )
     write_convergence_csv(output, rows)
-    metadata = {
-        "table": args.table,
-        "order": args.order,
-        "ndivs": args.ndivs,
-        "cfl_requested": float(args.cfl),
-        "tf": float(args.tf),
-        "sigma_angle": float(args.sigma),
-        "sigma_physical": float(sigma_physical),
-        "amplitude": float(args.amplitude),
-        "radius": float(args.radius),
-        "alpha0": float(args.alpha0),
-        "u0": float(args.u0),
-        "omega": list(rotation_axis_from_alpha0(args.alpha0)),
-        "flux": args.flux,
-        "lf_alpha": float(args.lf_alpha),
-        "form": args.form,
-        "use_numba": bool(not args.no_numba),
-        "history_every": int(args.history_every),
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "git_commit": current_git_commit(),
-    }
-    metadata["omega"] = [float(args.u0) * float(component) for component in metadata["omega"]]
+    resolved_plot_dir = None if args.no_plots else plot_dir_for_scheme(
+        args.plot_dir,
+        table=args.table,
+        sbp_variant=args.sbp,
+        volume_form=args.form,
+        flux_type=args.flux,
+    )
+    metadata = build_run_metadata(
+        args=args,
+        sigma_physical=sigma_physical,
+        output_csv=output,
+        plot_dir=resolved_plot_dir,
+    )
     metadata_output = metadata_path_from_output(output)
     write_metadata_json(metadata_output, metadata)
 
@@ -887,7 +1049,8 @@ def main() -> None:
     print(f"Metadata written to: {metadata_output}")
 
     if not args.no_plots:
-        plot_dir = Path(args.plot_dir)
+        plot_dir = resolved_plot_dir
+        assert plot_dir is not None
         plot_dir.mkdir(parents=True, exist_ok=True)
 
         time_plot = plot_dir / "relative_l2_history.png"
@@ -903,7 +1066,7 @@ def main() -> None:
             output_path=time_plot,
             quantity="relative_l2_error",
             ylabel="relative L2 error",
-            title="Gaussian advection relative L2 error history",
+            title=titled_scheme_plot("Gaussian advection relative L2 error history", scheme_text=scheme_text),
             semilogy=True,
             plot_time_unit=args.plot_time_unit,
         )
@@ -913,7 +1076,7 @@ def main() -> None:
             output_path=mass_plot,
             quantity="relative_mass_error",
             ylabel="relative mass error",
-            title="Relative mass error history",
+            title=titled_scheme_plot("Relative mass error history", scheme_text=scheme_text),
             semilogy=True,
             plot_time_unit=args.plot_time_unit,
         )
@@ -923,7 +1086,7 @@ def main() -> None:
             output_path=energy_plot,
             quantity="relative_energy_error",
             ylabel="relative energy error",
-            title="Relative energy error history",
+            title=titled_scheme_plot("Relative energy error history", scheme_text=scheme_text),
             semilogy=True,
             plot_time_unit=args.plot_time_unit,
         )
@@ -933,7 +1096,7 @@ def main() -> None:
             output_path=signed_energy_plot,
             quantity="signed_relative_energy_error",
             ylabel="signed relative energy error",
-            title="Signed relative energy error history",
+            title=titled_scheme_plot("Signed relative energy error history", scheme_text=scheme_text),
             semilogy=False,
             plot_time_unit=args.plot_time_unit,
         )
@@ -942,17 +1105,20 @@ def main() -> None:
             histories=histories,
             output_path=bounds_plot,
             amplitude=float(args.amplitude),
+            title=titled_scheme_plot("Gaussian solution bounds history", scheme_text=scheme_text),
             plot_time_unit=args.plot_time_unit,
         )
 
         plot_error_convergence(
             rows=rows,
             output_path=conv_plot,
+            title=titled_scheme_plot("Gaussian advection convergence", scheme_text=scheme_text),
         )
 
         plot_observed_order(
             rows=rows,
             output_path=order_plot,
+            title=titled_scheme_plot("Observed convergence order", scheme_text=scheme_text),
         )
 
         print()
