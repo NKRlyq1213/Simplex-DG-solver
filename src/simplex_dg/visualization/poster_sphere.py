@@ -1546,6 +1546,13 @@ def _inject_pyvista_html_camera_controls(
 
     panel = """
 <style id="poster-camera-controls-style">
+#poster-vtk-content {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  background: #fff;
+}
 #poster-camera-panel {
   position: fixed;
   top: 12px;
@@ -1598,6 +1605,7 @@ def _inject_pyvista_html_camera_controls(
   background: #e9e9e9;
 }
 </style>
+<div id="poster-vtk-content" class="content"></div>
 <div id="poster-camera-panel" aria-label="Camera angle controls">
   <div class="poster-camera-title">Camera angles</div>
   <label for="camera-azimuth">Azimuth<input id="camera-azimuth" type="number" step="0.1"></label>

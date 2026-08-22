@@ -497,6 +497,7 @@ def test_save_interactive_html_writes_camera_angle_controls():
     assert 'id="camera-azimuth"' in html
     assert 'id="camera-elevation"' in html
     assert 'id="camera-distance"' in html
+    assert 'id="poster-vtk-content" class="content"' in html
     assert 'id="poster-camera-controls-script"' in html
     assert "OfflineLocalView.load" in html
     assert "global.renderWindow" in html
@@ -504,6 +505,7 @@ def test_save_interactive_html_writes_camera_angle_controls():
     assert "cdn.jsdelivr.net" not in html
     assert "OrbitControls" not in html
     assert '"azimuth":-45.0' in html
+    assert html.index('id="poster-vtk-content"') < html.index('id="poster-camera-panel"')
 
 
 @pytest.mark.parametrize(
