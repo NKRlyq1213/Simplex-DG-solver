@@ -505,11 +505,18 @@ def test_save_interactive_html_writes_camera_angle_controls():
     assert "global.renderWindow" in html
     assert "window.__posterRenderWindow" in html
     assert "Renderer not ready" in html
+    assert "function cameraStateFromCamera" in html
+    assert "function startCameraSync" in html
+    assert "function rendererViewPropCount" in html
+    assert "rendererViewPropCount(item) > 0" in html
+    assert "onEndAnimation" in html
+    assert "applyPosterCamera(POSTER_CAMERA" not in html
     assert "function drawSurface" not in html
     assert "cdn.jsdelivr.net" not in html
     assert "OrbitControls" not in html
     assert '"azimuth":-45.0' in html
     assert html.index('id="poster-vtk-content"') < html.index('id="poster-camera-panel"')
+    assert html.index('id="poster-vtk-content"') < html.index("function loadDataSet")
     reinjected = _inject_pyvista_html_camera_controls(
         html,
         camera_state={

@@ -1662,12 +1662,17 @@ def _inject_pyvista_html_camera_controls(
 
   const POSTER_CAMERA = __POSTER_CAMERA__;
   const DEG_TO_RAD = Math.PI / 180.0;
+  const RAD_TO_DEG = 180.0 / Math.PI;
   const INPUT_IDS = {
     azimuth: "camera-azimuth",
     elevation: "camera-elevation",
     distance: "camera-distance",
     roll: "camera-roll"
   };
+  let syncTimer = null;
+  let lastCameraSignature = "";
+  let isEditingInputs = false;
+  let cameraPanelInitialized = false;
 
   function node(id) {
     return document.getElementById(id);
@@ -1689,10 +1694,13 @@ def _inject_pyvista_html_camera_controls(
     return Number(value).toFixed(6).replace(/\\.?0+$/, "");
   }
 
-  function setInputs(state) {
+  function setInputs(state, options) {
+    const force = Boolean(options && options.force);
+    const activeElement = document.activeElement || null;
+
     Object.keys(INPUT_IDS).forEach(function (key) {
       const input = node(INPUT_IDS[key]);
-      if (input) {
+      if (input && (force || activeElement !== input)) {
         input.value = displayNumber(state[key]);
       }
     });
@@ -1730,6 +1738,10 @@ def _inject_pyvista_html_camera_controls(
     return [v[0] / length, v[1] / length, v[2] / length];
   }
 
+  function clamp(value, low, high) {
+    return Math.max(low, Math.min(high, value));
+  }
+
   function rotateAroundAxis(v, axis, angle) {
     const c = Math.cos(angle);
     const s = Math.sin(angle);
@@ -1740,6 +1752,13 @@ def _inject_pyvista_html_camera_controls(
       v[1] * c + axisCrossV[1] * s + axis[1] * axisDotV * (1.0 - c),
       v[2] * c + axisCrossV[2] * s + axis[2] * axisDotV * (1.0 - c)
     ]);
+  }
+
+  function baseViewUp(viewDirection) {
+    const zUp = [0.0, 0.0, 1.0];
+    const worldUp = Math.abs(dot(viewDirection, zUp)) > 0.96 ? [0.0, 1.0, 0.0] : zUp;
+    const right = normalize(cross(viewDirection, worldUp));
+    return normalize(cross(right, viewDirection));
   }
 
   function cameraFromAngles(state) {
@@ -1757,10 +1776,7 @@ def _inject_pyvista_html_camera_controls(
       distance * direction[2]
     ];
     const viewDirection = normalize([-direction[0], -direction[1], -direction[2]]);
-    const zUp = [0.0, 0.0, 1.0];
-    const worldUp = Math.abs(dot(viewDirection, zUp)) > 0.96 ? [0.0, 1.0, 0.0] : zUp;
-    const right = normalize(cross(viewDirection, worldUp));
-    let viewUp = normalize(cross(right, viewDirection));
+    let viewUp = baseViewUp(viewDirection);
 
     if (state.roll !== 0.0) {
       viewUp = rotateAroundAxis(viewUp, viewDirection, state.roll * DEG_TO_RAD);
@@ -1771,6 +1787,98 @@ def _inject_pyvista_html_camera_controls(
       focalPoint: [0.0, 0.0, 0.0],
       viewUp: viewUp
     };
+  }
+
+  function cameraVector(camera, getterName, byReferenceName, fallback) {
+    let value = null;
+
+    if (camera && typeof camera[getterName] === "function") {
+      value = camera[getterName]();
+    } else if (camera && typeof camera[byReferenceName] === "function") {
+      value = camera[byReferenceName]();
+    }
+
+    if (!value || value.length < 3) {
+      return fallback.slice();
+    }
+
+    return [
+      finiteNumber(value[0], fallback[0]),
+      finiteNumber(value[1], fallback[1]),
+      finiteNumber(value[2], fallback[2])
+    ];
+  }
+
+  function cameraStateFromCamera(camera) {
+    const fallback = cameraFromAngles(POSTER_CAMERA);
+    const position = cameraVector(camera, "getPosition", "getPositionByReference", fallback.position);
+    const focalPoint = cameraVector(
+      camera,
+      "getFocalPoint",
+      "getFocalPointByReference",
+      fallback.focalPoint
+    );
+    const cameraViewUp = normalize(
+      cameraVector(camera, "getViewUp", "getViewUpByReference", fallback.viewUp)
+    );
+    const offset = [
+      position[0] - focalPoint[0],
+      position[1] - focalPoint[1],
+      position[2] - focalPoint[2]
+    ];
+    const distance = Math.hypot(offset[0], offset[1], offset[2]);
+
+    if (!Number.isFinite(distance) || distance <= 0.0) {
+      return null;
+    }
+
+    const direction = [offset[0] / distance, offset[1] / distance, offset[2] / distance];
+    const viewDirection = normalize([-direction[0], -direction[1], -direction[2]]);
+    const unrolledViewUp = baseViewUp(viewDirection);
+    const roll = Math.atan2(
+      dot(cross(unrolledViewUp, cameraViewUp), viewDirection),
+      dot(unrolledViewUp, cameraViewUp)
+    ) * RAD_TO_DEG;
+
+    return {
+      azimuth: Math.atan2(direction[1], direction[0]) * RAD_TO_DEG,
+      elevation: Math.asin(clamp(direction[2], -1.0, 1.0)) * RAD_TO_DEG,
+      distance: distance,
+      roll: roll
+    };
+  }
+
+  function rendererViewPropCount(renderer) {
+    if (!renderer) {
+      return 0;
+    }
+
+    if (typeof renderer.getViewProps === "function") {
+      return renderer.getViewProps().length;
+    }
+
+    if (typeof renderer.getViewPropsWithNestedProps === "function") {
+      return renderer.getViewPropsWithNestedProps().length;
+    }
+
+    return 0;
+  }
+
+  function rendererIsInteractive(renderer) {
+    return !renderer.getInteractive || Boolean(renderer.getInteractive());
+  }
+
+  function rendererCamera(renderer) {
+    return renderer && renderer.getActiveCamera ? renderer.getActiveCamera() : null;
+  }
+
+  function cameraSignature(state) {
+    return [
+      state.azimuth.toFixed(4),
+      state.elevation.toFixed(4),
+      state.distance.toFixed(5),
+      state.roll.toFixed(4)
+    ].join("|");
   }
 
   function getRendererTarget() {
@@ -1788,10 +1896,21 @@ def _inject_pyvista_html_camera_controls(
       return null;
     }
 
-    const renderer = renderers.find(function (item) {
-      return !item.getInteractive || item.getInteractive();
-    }) || renderers[0];
-    const camera = renderer && renderer.getActiveCamera ? renderer.getActiveCamera() : null;
+    const renderer =
+      renderers.find(function (item) {
+        return rendererCamera(item) && rendererViewPropCount(item) > 0 && rendererIsInteractive(item);
+      }) ||
+      renderers.find(function (item) {
+        return rendererCamera(item) && rendererViewPropCount(item) > 0;
+      }) ||
+      renderers.find(function (item) {
+        return rendererCamera(item) && rendererIsInteractive(item);
+      }) ||
+      renderers.find(function (item) {
+        return rendererCamera(item);
+      }) ||
+      renderers[0];
+    const camera = rendererCamera(renderer);
 
     return camera ? { renderWindow: renderWindow, renderer: renderer, camera: camera } : null;
   }
@@ -1860,17 +1979,114 @@ def _inject_pyvista_html_camera_controls(
     return true;
   }
 
+  function syncInputsFromCamera(target, options) {
+    if (isEditingInputs && !(options && options.force)) {
+      return false;
+    }
+
+    const resolved = target || getRendererTarget();
+
+    if (!resolved) {
+      return false;
+    }
+
+    const state = cameraStateFromCamera(resolved.camera);
+
+    if (!state) {
+      return false;
+    }
+
+    const signature = cameraSignature(state);
+
+    if ((options && options.force) || signature !== lastCameraSignature) {
+      lastCameraSignature = signature;
+      setInputs(state, options);
+    }
+
+    return true;
+  }
+
+  function startCameraSync(target) {
+    if (syncTimer !== null) {
+      syncInputsFromCamera(target, { force: true });
+      return;
+    }
+
+    const sync = function () {
+      syncInputsFromCamera(getRendererTarget() || target);
+    };
+
+    if (target.camera && typeof target.camera.onModified === "function") {
+      target.camera.onModified(sync);
+    }
+
+    const interactor =
+      target.renderWindow && typeof target.renderWindow.getInteractor === "function"
+        ? target.renderWindow.getInteractor()
+        : null;
+
+    if (interactor) {
+      [
+        "onAnimation",
+        "onEndAnimation",
+        "onMouseMove",
+        "onLeftButtonRelease",
+        "onMouseWheel"
+      ].forEach(function (eventName) {
+        if (typeof interactor[eventName] === "function") {
+          interactor[eventName](sync);
+        }
+      });
+    }
+
+    syncInputsFromCamera(target, { force: true });
+    syncTimer = window.setInterval(sync, 150);
+  }
+
+  function bindInputFocusTracking() {
+    Object.keys(INPUT_IDS).forEach(function (key) {
+      const input = node(INPUT_IDS[key]);
+
+      if (!input) {
+        return;
+      }
+
+      input.addEventListener("focus", function () {
+        isEditingInputs = true;
+      });
+      input.addEventListener("blur", function () {
+        isEditingInputs = false;
+      });
+      input.addEventListener("keydown", function (event) {
+        if (event.key === "Enter") {
+          const applyButton = node("camera-apply");
+          if (applyButton) {
+            applyButton.click();
+          }
+        }
+      });
+    });
+  }
+
   function initCameraPanel() {
-    setInputs(POSTER_CAMERA);
+    if (cameraPanelInitialized) {
+      return;
+    }
+
+    cameraPanelInitialized = true;
+    setInputs(POSTER_CAMERA, { force: true });
+    bindInputFocusTracking();
     const applyButton = node("camera-apply");
 
     if (applyButton) {
       applyButton.addEventListener("click", function () {
         const state = readInputs();
-        setInputs(state);
+        isEditingInputs = false;
+        setInputs(state, { force: true });
         setStatus("Waiting for renderer...");
         waitForRenderer(function (target) {
           if (applyPosterCamera(state, target)) {
+            syncInputsFromCamera(target, { force: true });
             setStatus("Applied");
           } else {
             setStatus("Could not update camera");
@@ -1882,25 +2098,30 @@ def _inject_pyvista_html_camera_controls(
     }
 
     waitForRenderer(function (target) {
-      applyPosterCamera(POSTER_CAMERA, target);
+      startCameraSync(target);
     });
   }
 
   window.applyPosterCamera = function (state) {
-    return applyPosterCamera(state || readInputs());
+    const target = getRendererTarget();
+    const applied = applyPosterCamera(state || readInputs(), target);
+    if (applied && target) {
+      syncInputsFromCamera(target, { force: true });
+    }
+    return applied;
   };
+
+  initCameraPanel();
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", initCameraPanel);
-  } else {
-    initCameraPanel();
   }
 })();
 </script>
 """.replace("__POSTER_CAMERA__", camera_json)
 
-    if "</body>" in html:
-        return html.replace("</body>", f"{panel}\n  </body>", 1)
+    if "<body>" in html:
+        return html.replace("<body>", f"<body>{panel}\n", 1)
 
     return f"{html}\n{panel}"
 
