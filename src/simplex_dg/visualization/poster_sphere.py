@@ -1623,6 +1623,11 @@ def _inject_pyvista_html_camera_controls(
   color: #111;
   font: inherit;
 }
+#poster-camera-panel input:disabled {
+  background: #f2f2f2;
+  color: #555;
+  cursor: not-allowed;
+}
 #poster-camera-panel button {
   width: 100%;
   margin-top: 7px;
@@ -1652,7 +1657,7 @@ def _inject_pyvista_html_camera_controls(
     Elevation<input id="camera-elevation" type="number" step="0.1" min="-89.999" max="89.999">
   </label>
   <label for="camera-distance">Distance<input id="camera-distance" type="number" step="0.01" min="0.01"></label>
-  <label for="camera-roll">Roll<input id="camera-roll" type="number" step="0.1"></label>
+  <label for="camera-roll">Roll<input id="camera-roll" type="number" step="0.1" value="0" disabled></label>
   <button id="camera-apply" type="button">Apply</button>
   <div id="poster-camera-status" aria-live="polite"></div>
 </div>
@@ -1661,6 +1666,7 @@ def _inject_pyvista_html_camera_controls(
   "use strict";
 
   const POSTER_CAMERA = __POSTER_CAMERA__;
+  const FORCED_ROLL = 0.0;
   const DEG_TO_RAD = Math.PI / 180.0;
   const RAD_TO_DEG = 180.0 / Math.PI;
   const INPUT_IDS = {
@@ -1701,7 +1707,7 @@ def _inject_pyvista_html_camera_controls(
     Object.keys(INPUT_IDS).forEach(function (key) {
       const input = node(INPUT_IDS[key]);
       if (input && (force || activeElement !== input)) {
-        input.value = displayNumber(state[key]);
+        input.value = displayNumber(key === "roll" ? FORCED_ROLL : state[key]);
       }
     });
   }
@@ -1711,7 +1717,7 @@ def _inject_pyvista_html_camera_controls(
       azimuth: finiteNumber(node(INPUT_IDS.azimuth)?.value, POSTER_CAMERA.azimuth),
       elevation: finiteNumber(node(INPUT_IDS.elevation)?.value, POSTER_CAMERA.elevation),
       distance: finiteNumber(node(INPUT_IDS.distance)?.value, POSTER_CAMERA.distance),
-      roll: finiteNumber(node(INPUT_IDS.roll)?.value, POSTER_CAMERA.roll)
+      roll: FORCED_ROLL
     };
     state.elevation = Math.max(-89.999, Math.min(89.999, state.elevation));
     state.distance = Math.max(0.000001, state.distance);
@@ -1765,6 +1771,7 @@ def _inject_pyvista_html_camera_controls(
     const azimuth = state.azimuth * DEG_TO_RAD;
     const elevation = state.elevation * DEG_TO_RAD;
     const distance = Math.max(0.000001, state.distance);
+    const roll = FORCED_ROLL;
     const direction = [
       Math.cos(elevation) * Math.cos(azimuth),
       Math.cos(elevation) * Math.sin(azimuth),
@@ -1778,8 +1785,8 @@ def _inject_pyvista_html_camera_controls(
     const viewDirection = normalize([-direction[0], -direction[1], -direction[2]]);
     let viewUp = baseViewUp(viewDirection);
 
-    if (state.roll !== 0.0) {
-      viewUp = rotateAroundAxis(viewUp, viewDirection, state.roll * DEG_TO_RAD);
+    if (roll !== 0.0) {
+      viewUp = rotateAroundAxis(viewUp, viewDirection, roll * DEG_TO_RAD);
     }
 
     return {
@@ -1818,9 +1825,6 @@ def _inject_pyvista_html_camera_controls(
       "getFocalPointByReference",
       fallback.focalPoint
     );
-    const cameraViewUp = normalize(
-      cameraVector(camera, "getViewUp", "getViewUpByReference", fallback.viewUp)
-    );
     const offset = [
       position[0] - focalPoint[0],
       position[1] - focalPoint[1],
@@ -1833,19 +1837,17 @@ def _inject_pyvista_html_camera_controls(
     }
 
     const direction = [offset[0] / distance, offset[1] / distance, offset[2] / distance];
-    const viewDirection = normalize([-direction[0], -direction[1], -direction[2]]);
-    const unrolledViewUp = baseViewUp(viewDirection);
-    const roll = Math.atan2(
-      dot(cross(unrolledViewUp, cameraViewUp), viewDirection),
-      dot(unrolledViewUp, cameraViewUp)
-    ) * RAD_TO_DEG;
 
     return {
       azimuth: Math.atan2(direction[1], direction[0]) * RAD_TO_DEG,
       elevation: Math.asin(clamp(direction[2], -1.0, 1.0)) * RAD_TO_DEG,
       distance: distance,
-      roll: roll
+      roll: FORCED_ROLL
     };
+  }
+
+  function vectorDistance(a, b) {
+    return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
   }
 
   function rendererViewPropCount(renderer) {
@@ -1947,7 +1949,7 @@ def _inject_pyvista_html_camera_controls(
       return false;
     }
 
-    const cameraData = cameraFromAngles(state);
+    const cameraData = cameraFromAngles({ ...state, roll: FORCED_ROLL });
     resolved.camera.setPosition(cameraData.position[0], cameraData.position[1], cameraData.position[2]);
     resolved.camera.setFocalPoint(
       cameraData.focalPoint[0],
@@ -1979,11 +1981,34 @@ def _inject_pyvista_html_camera_controls(
     return true;
   }
 
-  function syncInputsFromCamera(target, options) {
-    if (isEditingInputs && !(options && options.force)) {
+  function forceCameraRoll(target, state) {
+    if (!target || !state) {
       return false;
     }
 
+    const cameraData = cameraFromAngles({ ...state, roll: FORCED_ROLL });
+    const currentViewUp = normalize(
+      cameraVector(target.camera, "getViewUp", "getViewUpByReference", cameraData.viewUp)
+    );
+
+    if (vectorDistance(currentViewUp, cameraData.viewUp) < 0.00001) {
+      return false;
+    }
+
+    target.camera.setViewUp(cameraData.viewUp[0], cameraData.viewUp[1], cameraData.viewUp[2]);
+
+    if (typeof target.camera.modified === "function") {
+      target.camera.modified();
+    }
+
+    if (typeof target.renderWindow.render === "function") {
+      target.renderWindow.render();
+    }
+
+    return true;
+  }
+
+  function syncInputsFromCamera(target, options) {
     const resolved = target || getRendererTarget();
 
     if (!resolved) {
@@ -1994,6 +2019,12 @@ def _inject_pyvista_html_camera_controls(
 
     if (!state) {
       return false;
+    }
+
+    const rollWasForced = forceCameraRoll(resolved, state);
+
+    if (isEditingInputs && !(options && options.force)) {
+      return rollWasForced;
     }
 
     const signature = cameraSignature(state);

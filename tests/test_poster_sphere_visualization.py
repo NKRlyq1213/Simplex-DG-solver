@@ -498,6 +498,7 @@ def test_save_interactive_html_writes_camera_angle_controls():
     assert 'id="camera-azimuth"' in html
     assert 'id="camera-elevation"' in html
     assert 'id="camera-distance"' in html
+    assert 'id="camera-roll" type="number" step="0.1" value="0" disabled' in html
     assert 'id="poster-vtk-content" class="content"' in html
     assert 'id="poster-camera-controls-script"' in html
     assert 'id="poster-camera-status"' in html
@@ -505,10 +506,14 @@ def test_save_interactive_html_writes_camera_angle_controls():
     assert "global.renderWindow" in html
     assert "window.__posterRenderWindow" in html
     assert "Renderer not ready" in html
+    assert "const FORCED_ROLL = 0.0" in html
     assert "function cameraStateFromCamera" in html
+    assert "function forceCameraRoll" in html
     assert "function startCameraSync" in html
     assert "function rendererViewPropCount" in html
     assert "rendererViewPropCount(item) > 0" in html
+    assert "roll: FORCED_ROLL" in html
+    assert "finiteNumber(node(INPUT_IDS.roll)" not in html
     assert "onEndAnimation" in html
     assert "applyPosterCamera(POSTER_CAMERA" not in html
     assert "function drawSurface" not in html
