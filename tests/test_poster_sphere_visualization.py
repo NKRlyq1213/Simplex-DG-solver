@@ -494,7 +494,10 @@ def test_save_interactive_html_writes_camera_angle_controls():
     assert 'id="camera-azimuth"' in html
     assert 'id="camera-elevation"' in html
     assert 'id="camera-distance"' in html
-    assert "OrbitControls" in html
+    assert "document.createElement(\"canvas\")" in html
+    assert "function drawSurface" in html
+    assert "cdn.jsdelivr.net" not in html
+    assert "OrbitControls" not in html
     assert "Dashed initial contours q(t=0): 200, 500, 800" in html
     assert '"azimuth":-45.0' in html
 

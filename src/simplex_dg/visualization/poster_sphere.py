@@ -1956,6 +1956,12 @@ html, body {{
   position: fixed;
   inset: 0;
 }}
+#poster-viewer canvas {{
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}}
 #camera-panel {{
   position: fixed;
   left: 16px;
@@ -2047,150 +2053,412 @@ html, body {{
   <div id="colorbar-ticks"></div>
 </div>
 <div id="contour-label"></div>
-<script type="module">
-import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js";
-import {{ OrbitControls }} from "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js";
-
+<script>
 const DATA = {data_json};
 const root = document.getElementById("poster-viewer");
-const renderer = new THREE.WebGLRenderer({{ antialias: true, alpha: false }});
-renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-renderer.setClearColor(0xffffff, 1);
-root.appendChild(renderer.domElement);
+const canvas = document.createElement("canvas");
+canvas.setAttribute("aria-label", "Interactive poster sphere");
+root.appendChild(canvas);
+const ctx = canvas.getContext("2d");
+const state = {{
+  azimuth: DATA.camera.azimuth,
+  elevation: DATA.camera.elevation,
+  distance: DATA.camera.distance,
+  roll: DATA.camera.roll
+}};
+let dragStart = null;
 
-const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(32, 1, 0.01, 100);
-camera.up.set(0, 0, 1);
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(0, 0, 0);
-controls.enableDamping = true;
-
-function colorHex(hex) {{
-  return new THREE.Color(hex);
+function clamp(value, low, high) {{
+  return Math.min(high, Math.max(low, value));
 }}
 
-function setBufferAttribute(geometry, name, values, itemSize) {{
-  geometry.setAttribute(name, new THREE.Float32BufferAttribute(values, itemSize));
+function add(a, b) {{
+  return [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
 }}
 
-function addSurface() {{
-  const geometry = new THREE.BufferGeometry();
-  setBufferAttribute(geometry, "position", DATA.surface.positions, 3);
-  setBufferAttribute(geometry, "color", DATA.surface.colors, 3);
-  geometry.setIndex(DATA.surface.indices);
-  geometry.computeVertexNormals();
-  const material = new THREE.MeshBasicMaterial({{
-    vertexColors: true,
-    side: THREE.DoubleSide
-  }});
-  scene.add(new THREE.Mesh(geometry, material));
+function scale(a, value) {{
+  return [a[0] * value, a[1] * value, a[2] * value];
 }}
 
-function addLineSegments(values, color, opacity, dashed = false, dashSize = 0.045, gapSize = 0.028) {{
-  if (!values.length) return;
-  const geometry = new THREE.BufferGeometry();
-  setBufferAttribute(geometry, "position", values, 3);
-  const material = dashed
-    ? new THREE.LineDashedMaterial({{ color: colorHex(color), dashSize, gapSize, linewidth: 1 }})
-    : new THREE.LineBasicMaterial({{ color: colorHex(color), transparent: opacity < 1, opacity, linewidth: 1 }});
-  const lines = new THREE.LineSegments(geometry, material);
-  if (dashed) lines.computeLineDistances();
-  scene.add(lines);
+function dot(a, b) {{
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }}
 
-function addPolyline(values, color) {{
-  if (!values.length) return;
-  const geometry = new THREE.BufferGeometry();
-  setBufferAttribute(geometry, "position", values, 3);
-  const material = new THREE.LineBasicMaterial({{ color: colorHex(color), linewidth: 1 }});
-  scene.add(new THREE.Line(geometry, material));
+function cross(a, b) {{
+  return [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0]
+  ];
 }}
 
-function addArrow(origin, direction, length, color, headLength, headWidth) {{
-  const dir = new THREE.Vector3(direction[0], direction[1], direction[2]).normalize();
-  const start = new THREE.Vector3(origin[0], origin[1], origin[2]);
-  const arrow = new THREE.ArrowHelper(dir, start, length, colorHex(color), headLength, headWidth);
-  scene.add(arrow);
+function normalize(a) {{
+  const length = Math.hypot(a[0], a[1], a[2]);
+  if (length <= 1e-12) return [1, 0, 0];
+  return [a[0] / length, a[1] / length, a[2] / length];
 }}
 
-function addArrows() {{
-  for (let i = 0; i < DATA.arrows.lengths.length; i += 1) {{
-    const p = 3 * i;
-    const origin = DATA.arrows.starts.slice(p, p + 3);
-    const direction = DATA.arrows.directions.slice(p, p + 3);
-    const length = DATA.arrows.lengths[i];
-    addArrow(origin, direction, length, DATA.arrows.color, 0.32 * length, 0.08 * length);
+function pointAt(flatValues, pointIndex) {{
+  const p = pointIndex * 3;
+  return [flatValues[p], flatValues[p + 1], flatValues[p + 2]];
+}}
+
+function pointFromOffset(flatValues, offset) {{
+  return [flatValues[offset], flatValues[offset + 1], flatValues[offset + 2]];
+}}
+
+function colorAt(pointIndex) {{
+  const p = pointIndex * 3;
+  const colors = DATA.surface.colors;
+  return [
+    Math.round(255 * colors[p]),
+    Math.round(255 * colors[p + 1]),
+    Math.round(255 * colors[p + 2])
+  ];
+}}
+
+function averageTriangleColor(i0, i1, i2) {{
+  const c0 = colorAt(i0);
+  const c1 = colorAt(i1);
+  const c2 = colorAt(i2);
+  return "rgb("
+    + Math.round((c0[0] + c1[0] + c2[0]) / 3) + ","
+    + Math.round((c0[1] + c1[1] + c2[1]) / 3) + ","
+    + Math.round((c0[2] + c1[2] + c2[2]) / 3) + ")";
+}}
+
+function hexToRgba(hex, opacity) {{
+  const text = String(hex || "#000000").replace("#", "");
+  const r = parseInt(text.slice(0, 2), 16);
+  const g = parseInt(text.slice(2, 4), 16);
+  const b = parseInt(text.slice(4, 6), 16);
+  return "rgba(" + r + "," + g + "," + b + "," + opacity + ")";
+}}
+
+function canvasSize() {{
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const width = Math.max(1, root.clientWidth);
+  const height = Math.max(1, root.clientHeight);
+  canvas.style.width = width + "px";
+  canvas.style.height = height + "px";
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return {{ width, height }};
+}}
+
+function cameraBasis() {{
+  const az = Number(state.azimuth) * Math.PI / 180;
+  const el = Number(state.elevation) * Math.PI / 180;
+  const roll = Number(state.roll) * Math.PI / 180;
+  const eye = normalize([
+    Math.cos(el) * Math.cos(az),
+    Math.cos(el) * Math.sin(az),
+    Math.sin(el)
+  ]);
+  const forward = scale(eye, -1);
+  let right = normalize(cross(forward, [0, 0, 1]));
+  if (Math.hypot(right[0], right[1], right[2]) <= 1e-12) {{
+    right = [1, 0, 0];
+  }}
+  const up = normalize(cross(right, forward));
+  const cr = Math.cos(roll);
+  const sr = Math.sin(roll);
+  return {{
+    eye,
+    forward,
+    right: add(scale(right, cr), scale(up, sr)),
+    up: add(scale(up, cr), scale(right, -sr))
+  }};
+}}
+
+function project(point, basis, width, height) {{
+  const distance = Math.max(0.1, Number(state.distance) || DATA.camera.distance || 3.5);
+  const drawScale = 0.43 * Math.min(width, height) * (3.5 / distance);
+  return {{
+    x: width / 2 + dot(point, basis.right) * drawScale,
+    y: height / 2 - dot(point, basis.up) * drawScale,
+    depth: dot(point, basis.forward),
+    front: dot(point, basis.eye) >= -0.025,
+    scale: drawScale
+  }};
+}}
+
+function drawSurface(basis, width, height) {{
+  const triangles = [];
+  const indices = DATA.surface.indices;
+  for (let i = 0; i < indices.length; i += 3) {{
+    const i0 = indices[i];
+    const i1 = indices[i + 1];
+    const i2 = indices[i + 2];
+    const p0 = pointAt(DATA.surface.positions, i0);
+    const p1 = pointAt(DATA.surface.positions, i1);
+    const p2 = pointAt(DATA.surface.positions, i2);
+    triangles.push({{
+      p0,
+      p1,
+      p2,
+      depth: (dot(p0, basis.forward) + dot(p1, basis.forward) + dot(p2, basis.forward)) / 3,
+      color: averageTriangleColor(i0, i1, i2)
+    }});
+  }}
+
+  triangles.sort((a, b) => b.depth - a.depth);
+  for (const tri of triangles) {{
+    const a = project(tri.p0, basis, width, height);
+    const b = project(tri.p1, basis, width, height);
+    const c = project(tri.p2, basis, width, height);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.lineTo(c.x, c.y);
+    ctx.closePath();
+    ctx.fillStyle = tri.color;
+    ctx.strokeStyle = tri.color;
+    ctx.lineWidth = 0.25;
+    ctx.fill();
+    ctx.stroke();
   }}
 }}
 
-function addAxes() {{
-  const mode = DATA.axes.mode;
-  if (mode === "none" || mode === "corner") return;
-  const L = DATA.axes.length;
-  addArrow([0, 0, 0], [1, 0, 0], L, DATA.axes.color, 0.10 * L, 0.035 * L);
-  addArrow([0, 0, 0], [0, 1, 0], L, DATA.axes.color, 0.10 * L, 0.035 * L);
-  addArrow([0, 0, 0], [0, 0, 1], L, DATA.axes.color, 0.10 * L, 0.035 * L);
+function drawSegment(a, b, basis, width, height, color, lineWidth, opacity, dashed, frontOnly) {{
+  const midpoint = scale(add(a, b), 0.5);
+  if (frontOnly && dot(midpoint, basis.eye) < -0.02) return;
+  const pa = project(a, basis, width, height);
+  const pb = project(b, basis, width, height);
+  ctx.save();
+  ctx.strokeStyle = hexToRgba(color, opacity);
+  ctx.lineWidth = lineWidth;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  if (dashed) ctx.setLineDash([8, 5]);
+  ctx.beginPath();
+  ctx.moveTo(pa.x, pa.y);
+  ctx.lineTo(pb.x, pb.y);
+  ctx.stroke();
+  ctx.restore();
 }}
 
-function addRotationAxis() {{
+function drawSegments(values, basis, width, height, color, lineWidth, opacity, dashed, frontOnly) {{
+  if (!values.length) return;
+  for (let i = 0; i < values.length; i += 6) {{
+    drawSegment(
+      pointFromOffset(values, i),
+      pointFromOffset(values, i + 3),
+      basis,
+      width,
+      height,
+      color,
+      lineWidth,
+      opacity,
+      dashed,
+      frontOnly
+    );
+  }}
+}}
+
+function drawArrowLine(start, end, basis, width, height, color, lineWidth, headSize, frontOnly) {{
+  const midpoint = scale(add(start, end), 0.5);
+  if (frontOnly && dot(midpoint, basis.eye) < -0.02) return;
+  const a = project(start, basis, width, height);
+  const b = project(end, basis, width, height);
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const length = Math.hypot(dx, dy);
+  if (length <= 0.1) return;
+  const ux = dx / length;
+  const uy = dy / length;
+  const px = -uy;
+  const py = ux;
+  const head = Math.max(headSize, lineWidth * 3.5);
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = lineWidth;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y);
+  ctx.lineTo(b.x - ux * head * 0.65, b.y - uy * head * 0.65);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(b.x, b.y);
+  ctx.lineTo(b.x - ux * head - px * head * 0.42, b.y - uy * head - py * head * 0.42);
+  ctx.lineTo(b.x - ux * head + px * head * 0.42, b.y - uy * head + py * head * 0.42);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}}
+
+function drawWindArrows(basis, width, height) {{
+  const starts = DATA.arrows.starts;
+  const directions = DATA.arrows.directions;
+  for (let i = 0; i < DATA.arrows.lengths.length; i += 1) {{
+    const p = 3 * i;
+    const start = pointFromOffset(starts, p);
+    const direction = pointFromOffset(directions, p);
+    const length = DATA.arrows.lengths[i];
+    const end = add(start, scale(direction, length));
+    const lineWidth = Math.max(1.0, 17.0 * length);
+    drawArrowLine(start, end, basis, width, height, DATA.arrows.color, lineWidth, Math.max(5.0, 58.0 * length), true);
+  }}
+}}
+
+function drawAxes(basis, width, height) {{
+  if (DATA.axes.mode === "none" || DATA.axes.mode === "corner") return;
+  const L = DATA.axes.length;
+  const items = [
+    {{ label: "X", direction: [1, 0, 0] }},
+    {{ label: "Y", direction: [0, 1, 0] }},
+    {{ label: "Z", direction: [0, 0, 1] }}
+  ];
+  ctx.save();
+  ctx.font = "13px Arial, sans-serif";
+  ctx.fillStyle = DATA.axes.color;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  for (const item of items) {{
+    const end = scale(item.direction, L);
+    drawArrowLine([0, 0, 0], end, basis, width, height, DATA.axes.color, 2.0, 8.0, false);
+    const labelPoint = project(scale(item.direction, L * 1.08), basis, width, height);
+    ctx.fillText(item.label, labelPoint.x, labelPoint.y);
+  }}
+  ctx.restore();
+}}
+
+function drawRotationAxis(basis, width, height) {{
   if (!DATA.rotationAxis.show) return;
   const d = DATA.rotationAxis.direction;
   const L = DATA.rotationAxis.length;
-  addArrow([-L * d[0], -L * d[1], -L * d[2]], d, 2 * L, DATA.rotationAxis.color, 0.16 * 2 * L, 0.025 * DATA.rotationAxis.width);
+  drawArrowLine(
+    [-L * d[0], -L * d[1], -L * d[2]],
+    [L * d[0], L * d[1], L * d[2]],
+    basis,
+    width,
+    height,
+    DATA.rotationAxis.color,
+    DATA.rotationAxis.width,
+    Math.max(11.0, DATA.rotationAxis.width * 4.8),
+    false
+  );
 }}
 
-function addRotationRing() {{
+function drawRotationRing(basis, width, height) {{
   if (!DATA.rotationRing.show) return;
-  addPolyline(DATA.rotationRing.points, DATA.rotationRing.color);
-  const pos = DATA.rotationRing.conePosition;
-  const dir = DATA.rotationRing.coneDirection;
-  const cone = new THREE.Mesh(
-    new THREE.ConeGeometry(DATA.rotationRing.coneRadius, DATA.rotationRing.coneHeight, 32),
-    new THREE.MeshBasicMaterial({{ color: colorHex(DATA.rotationRing.color) }})
-  );
-  cone.position.set(pos[0], pos[1], pos[2]);
-  const up = new THREE.Vector3(0, 1, 0);
-  const target = new THREE.Vector3(dir[0], dir[1], dir[2]).normalize();
-  cone.quaternion.setFromUnitVectors(up, target);
-  scene.add(cone);
+  const points = DATA.rotationRing.points;
+  for (let i = 0; i < points.length - 3; i += 3) {{
+    drawSegment(
+      pointFromOffset(points, i),
+      pointFromOffset(points, i + 3),
+      basis,
+      width,
+      height,
+      DATA.rotationRing.color,
+      DATA.rotationRing.width,
+      1,
+      false,
+      true
+    );
+  }}
+  drawRingCone(basis, width, height);
 }}
 
-function setCameraFromValues() {{
-  const az = Number(document.getElementById("camera-azimuth").value) * Math.PI / 180;
-  const el = Number(document.getElementById("camera-elevation").value) * Math.PI / 180;
-  const dist = Math.max(0.1, Number(document.getElementById("camera-distance").value));
-  const roll = Number(document.getElementById("camera-roll").value) * Math.PI / 180;
-  camera.position.set(
-    dist * Math.cos(el) * Math.cos(az),
-    dist * Math.cos(el) * Math.sin(az),
-    dist * Math.sin(el)
-  );
-  camera.up.set(0, 0, 1);
-  camera.lookAt(0, 0, 0);
-  camera.rotateZ(roll);
-  controls.target.set(0, 0, 0);
-  controls.update();
+function drawRingCone(basis, width, height) {{
+  const center = DATA.rotationRing.conePosition;
+  const direction = normalize(DATA.rotationRing.coneDirection);
+  const tip = add(center, scale(direction, DATA.rotationRing.coneHeight * 0.5));
+  const base = add(center, scale(direction, -DATA.rotationRing.coneHeight * 0.5));
+  const centerProjected = project(center, basis, width, height);
+  if (dot(center, basis.eye) < -0.05) return;
+  const tipProjected = project(tip, basis, width, height);
+  const baseProjected = project(base, basis, width, height);
+  let dx = tipProjected.x - baseProjected.x;
+  let dy = tipProjected.y - baseProjected.y;
+  let length = Math.hypot(dx, dy);
+  if (length <= 0.1) {{
+    dx = 1;
+    dy = 0;
+    length = 1;
+  }}
+  const px = -dy / length;
+  const py = dx / length;
+  const halfWidth = DATA.rotationRing.coneRadius * centerProjected.scale;
+  ctx.save();
+  ctx.fillStyle = DATA.rotationRing.color;
+  ctx.beginPath();
+  ctx.moveTo(tipProjected.x, tipProjected.y);
+  ctx.lineTo(baseProjected.x + px * halfWidth, baseProjected.y + py * halfWidth);
+  ctx.lineTo(baseProjected.x - px * halfWidth, baseProjected.y - py * halfWidth);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
 }}
 
-function updateCameraInputsFromPosition() {{
-  const p = camera.position;
-  const dist = Math.sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
-  if (dist <= 0) return;
-  document.getElementById("camera-azimuth").value = (Math.atan2(p.y, p.x) * 180 / Math.PI).toFixed(2);
-  document.getElementById("camera-elevation").value = (Math.asin(p.z / dist) * 180 / Math.PI).toFixed(2);
-  document.getElementById("camera-distance").value = dist.toFixed(2);
+function render() {{
+  const size = canvasSize();
+  const width = size.width;
+  const height = size.height;
+  const basis = cameraBasis();
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, width, height);
+  drawSurface(basis, width, height);
+  drawSegments(DATA.edges.segments, basis, width, height, DATA.edges.color, 0.45, DATA.edges.opacity, false, true);
+  for (const contour of DATA.contours.items) {{
+    drawSegments(contour.segments, basis, width, height, contour.color, DATA.contours.width, 1, true, true);
+  }}
+  drawWindArrows(basis, width, height);
+  drawAxes(basis, width, height);
+  drawRotationAxis(basis, width, height);
+  drawRotationRing(basis, width, height);
+}}
+
+function setInputsFromState() {{
+  document.getElementById("camera-azimuth").value = Number(state.azimuth).toFixed(2);
+  document.getElementById("camera-elevation").value = Number(state.elevation).toFixed(2);
+  document.getElementById("camera-distance").value = Number(state.distance).toFixed(2);
+  document.getElementById("camera-roll").value = Number(state.roll).toFixed(2);
+}}
+
+function setStateFromInputs() {{
+  state.azimuth = Number(document.getElementById("camera-azimuth").value) || 0;
+  state.elevation = clamp(Number(document.getElementById("camera-elevation").value) || 0, -89.9, 89.9);
+  state.distance = Math.max(0.1, Number(document.getElementById("camera-distance").value) || DATA.camera.distance || 3.5);
+  state.roll = Number(document.getElementById("camera-roll").value) || 0;
+  setInputsFromState();
+  render();
 }}
 
 function initControls() {{
-  document.getElementById("camera-azimuth").value = DATA.camera.azimuth;
-  document.getElementById("camera-elevation").value = DATA.camera.elevation;
-  document.getElementById("camera-distance").value = DATA.camera.distance;
-  document.getElementById("camera-roll").value = DATA.camera.roll;
+  setInputsFromState();
   document.getElementById("camera-panel").addEventListener("submit", (event) => {{
     event.preventDefault();
-    setCameraFromValues();
+    setStateFromInputs();
   }});
-  controls.addEventListener("end", updateCameraInputsFromPosition);
+  for (const id of ["camera-azimuth", "camera-elevation", "camera-distance", "camera-roll"]) {{
+    document.getElementById(id).addEventListener("change", setStateFromInputs);
+  }}
+  canvas.addEventListener("pointerdown", (event) => {{
+    dragStart = {{
+      x: event.clientX,
+      y: event.clientY,
+      azimuth: state.azimuth,
+      elevation: state.elevation
+    }};
+    canvas.setPointerCapture(event.pointerId);
+  }});
+  canvas.addEventListener("pointermove", (event) => {{
+    if (!dragStart) return;
+    state.azimuth = dragStart.azimuth - (event.clientX - dragStart.x) * 0.35;
+    state.elevation = clamp(dragStart.elevation + (event.clientY - dragStart.y) * 0.25, -89.9, 89.9);
+    setInputsFromState();
+    render();
+  }});
+  canvas.addEventListener("pointerup", () => {{
+    dragStart = null;
+  }});
+  canvas.addEventListener("pointercancel", () => {{
+    dragStart = null;
+  }});
 }}
 
 function initOverlay() {{
@@ -2204,35 +2472,10 @@ function initOverlay() {{
   document.getElementById("contour-label").textContent = DATA.contours.label;
 }}
 
-function resize() {{
-  const width = root.clientWidth;
-  const height = root.clientHeight;
-  renderer.setSize(width, height, false);
-  camera.aspect = width / Math.max(1, height);
-  camera.updateProjectionMatrix();
-}}
-
-addSurface();
-addLineSegments(DATA.edges.segments, DATA.edges.color, DATA.edges.opacity);
-for (const contour of DATA.contours.items) {{
-  addLineSegments(contour.segments, contour.color, 1, true);
-}}
-addArrows();
-addAxes();
-addRotationAxis();
-addRotationRing();
 initControls();
 initOverlay();
-resize();
-setCameraFromValues();
-window.addEventListener("resize", resize);
-
-function animate() {{
-  requestAnimationFrame(animate);
-  controls.update();
-  renderer.render(scene, camera);
-}}
-animate();
+render();
+window.addEventListener("resize", render);
 </script>
 </body>
 </html>
