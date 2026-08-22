@@ -222,6 +222,8 @@ def test_poster_script_parses_expression_arguments():
     assert args.rotation_ring_cone_height == pytest.approx(0.18)
     assert args.rotation_ring_cone_radius == pytest.approx(0.080)
     assert args.arrow_scale_mode == "magnitude"
+    assert args.save_current_view is False
+    assert args.save_key == "s"
 
 
 def test_poster_script_parses_arrow_placement_and_colorbar_size():
@@ -359,6 +361,22 @@ def test_poster_script_lighting_is_explicit_opt_in():
     assert lighting_args.lighting is True
 
 
+def test_poster_script_parses_current_view_export_options():
+    args = poster_sphere_exact.parse_args(
+        [
+            "--save-current-view",
+            "--output",
+            "outputs/poster/manual_view.png",
+            "--save-key",
+            "p",
+        ]
+    )
+
+    assert args.save_current_view is True
+    assert args.output == "outputs/poster/manual_view.png"
+    assert args.save_key == "p"
+
+
 @pytest.mark.parametrize(
     "bad_args",
     [
@@ -399,6 +417,10 @@ def test_poster_script_lighting_is_explicit_opt_in():
         ["--rotation-ring-cone-offset", "-0.01"],
         ["--rotation-ring-cone-resolution", "2"],
         ["--contour-width", "0"],
+        ["--save-current-view"],
+        ["--save-current-view", "--output", "outputs/poster/manual_view.png", "--no-show"],
+        ["--save-current-view", "--output", "outputs/poster/manual_view.png", "--off-screen"],
+        ["--save-key", " "],
     ],
 )
 def test_poster_script_rejects_invalid_positive_controls(bad_args: list[str]):

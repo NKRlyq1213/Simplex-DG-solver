@@ -348,6 +348,19 @@ def build_parser() -> argparse.ArgumentParser:
     output.add_argument("--show", action="store_true", help="Show the interactive window even when --output is set.")
     output.add_argument("--no-show", action="store_true", help="Do not open the interactive window.")
     output.add_argument("--off-screen", action="store_true", help="Force PyVista off-screen rendering.")
+    output.add_argument(
+        "--save-current-view",
+        action="store_true",
+        help=(
+            "Open an interactive window and save the current camera view to --output "
+            "when --save-key is pressed."
+        ),
+    )
+    output.add_argument(
+        "--save-key",
+        default="s",
+        help="Keyboard key used by --save-current-view. Default: s.",
+    )
     output.add_argument("--check-only", action="store_true", help="Build exact fields and print sanity checks only.")
 
     return parser
@@ -447,7 +460,40 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if args.show and args.no_show:
         parser.error("--show and --no-show cannot both be set.")
 
+    if args.save_current_view and args.output is None:
+        parser.error("--save-current-view requires --output.")
+
+    if args.save_current_view and args.no_show:
+        parser.error("--save-current-view cannot be used with --no-show.")
+
+    if args.save_current_view and args.off_screen:
+        parser.error("--save-current-view cannot be used with --off-screen.")
+
+    if not args.save_key.strip():
+        parser.error("--save-key must be nonempty.")
+
     return args
+
+
+def add_current_view_save_key(
+    plotter,
+    output: str,
+    *,
+    key: str,
+    transparent_background: bool,
+    window_size: tuple[int, int],
+) -> None:
+    def save_current_view() -> None:
+        output_path = save_screenshot(
+            plotter,
+            output,
+            transparent_background=transparent_background,
+            window_size=window_size,
+        )
+        print(f"Current camera PNG written to: {output_path}")
+        print(f"Camera position             : {plotter.camera_position}")
+
+    plotter.add_key_event(key.strip(), save_current_view)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -586,7 +632,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.check_only:
         return 0
 
-    interactive = bool(args.show or (args.output is None and not args.no_show))
+    interactive = bool(args.save_current_view or args.show or (args.output is None and not args.no_show))
     off_screen = bool(args.off_screen or not interactive)
     window_size = (int(args.window_size[0]), int(args.window_size[1]))
 
@@ -653,7 +699,17 @@ def main(argv: list[str] | None = None) -> int:
         off_screen=off_screen,
     )
 
-    if args.output is not None:
+    if args.save_current_view:
+        add_current_view_save_key(
+            plotter,
+            args.output,
+            key=args.save_key,
+            transparent_background=args.transparent_background,
+            window_size=window_size,
+        )
+        print(f"Interactive save key     : {args.save_key.strip()}")
+        print(f"Current-view output PNG  : {args.output}")
+    elif args.output is not None:
         output_path = save_screenshot(
             plotter,
             args.output,

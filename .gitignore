@@ -4,3 +4,5 @@ __pycache__/
 *.bak
 *.bak_*
 *.bak-*
+results/interface_normal_orientation/interfaces_ndiv32.csv
+results/interface_normal_orientation/interfaces_ndiv64.csv
