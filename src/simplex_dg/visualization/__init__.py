@@ -34,7 +34,7 @@ from simplex_dg.visualization.poster_sphere import (
     resolve_rotation_axis_radii,
     resolve_sigma_physical,
     sample_velocity_arrows,
-    save_html,
+    save_interactive_html,
     save_screenshot,
     scalar_color_from_colormap,
 )
@@ -69,7 +69,7 @@ __all__ = [
     "configure_lighting",
     "render_scene",
     "save_screenshot",
-    "save_html",
+    "save_interactive_html",
     "reference_plot_triangulation",
     "resolve_contour_label_position",
     "resolve_sigma_physical",

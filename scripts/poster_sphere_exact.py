@@ -36,7 +36,7 @@ from simplex_dg.visualization.poster_sphere import (
     render_scene,
     resolve_rotation_axis_radii,
     resolve_sigma_physical,
-    save_html,
+    save_interactive_html,
     save_screenshot,
 )
 
@@ -353,7 +353,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     output = parser.add_argument_group("preview / export")
     output.add_argument("--output", type=str, default=None, help="Optional PNG screenshot path.")
-    output.add_argument("--html-output", type=str, default=None, help="Optional interactive HTML export path.")
+    output.add_argument(
+        "--html-output",
+        type=str,
+        default=None,
+        help="Optional standalone interactive HTML export path with camera angle inputs.",
+    )
     output.add_argument("--window-size", nargs=2, type=int, default=[1600, 1200], metavar=("WIDTH", "HEIGHT"))
     output.add_argument("--transparent-background", action="store_true")
     output.add_argument("--show", action="store_true", help="Show the interactive window even when --output is set.")
@@ -364,7 +369,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Open an interactive window and save the current camera view to --output "
-            "when --save-key is pressed."
+            "and/or --html-output when --save-key is pressed."
         ),
     )
     output.add_argument(
@@ -563,6 +568,27 @@ def format_camera_angle_state(state: dict[str, float]) -> str:
     )
 
 
+def camera_angle_state_from_plotter(plotter, fallback: dict[str, float]) -> dict[str, float]:
+    try:
+        position = np.asarray(plotter.camera_position[0], dtype=float)
+        focal_point = np.asarray(plotter.camera_position[1], dtype=float)
+    except (AttributeError, IndexError, TypeError, ValueError):
+        return dict(fallback)
+
+    vector = position - focal_point
+    distance = float(np.linalg.norm(vector))
+
+    if distance <= 0.0:
+        return dict(fallback)
+
+    return {
+        "azimuth": float(np.rad2deg(np.arctan2(vector[1], vector[0]))),
+        "elevation": float(np.rad2deg(np.arcsin(np.clip(vector[2] / distance, -1.0, 1.0)))),
+        "distance": distance,
+        "roll": float(fallback.get("roll", DEFAULT_CAMERA_ROLL)),
+    }
+
+
 def read_camera_angle_value(name: str, current: float) -> float:
     raw = input(f"{name} [{current:.6g}]: ").strip()
 
@@ -616,6 +642,8 @@ def add_current_view_save_key(
     key: str,
     transparent_background: bool,
     window_size: tuple[int, int],
+    camera_state: dict[str, float],
+    html_save_callback,
 ) -> None:
     def save_current_view() -> None:
         if png_output is not None:
@@ -628,11 +656,7 @@ def add_current_view_save_key(
             print(f"Current camera PNG written to : {output_path}")
 
         if html_output is not None:
-            html_output_path = save_html(
-                plotter,
-                html_output,
-                window_size=window_size,
-            )
+            html_output_path = html_save_callback(camera_angle_state_from_plotter(plotter, camera_state))
             print(f"Current camera HTML written to: {html_output_path}")
 
         print(f"Camera position             : {plotter.camera_position}")
@@ -788,6 +812,49 @@ def main(argv: list[str] | None = None) -> int:
     off_screen = bool(args.off_screen or not interactive)
     window_size = (int(args.window_size[0]), int(args.window_size[1]))
 
+    def write_html_output(camera_state: dict[str, float]):
+        return save_interactive_html(
+            fields,
+            args.html_output,
+            contour_levels=contour_levels,
+            arrow_density=args.arrow_density,
+            arrow_scale=args.arrow_scale,
+            arrow_scale_mode=args.arrow_scale_mode,
+            arrow_min_scale=args.arrow_min_scale,
+            arrow_max_scale=args.arrow_max_scale,
+            arrow_radius_offset=arrow_radius_offset,
+            edge_opacity=args.edge_opacity,
+            contour_color_mode=args.contour_color_mode,
+            contour_width=args.contour_width,
+            axes_mode=args.axes,
+            axes_color=args.axes_color,
+            axes_length=args.axes_length,
+            show_rotation_axis=args.rotation_axis,
+            rotation_axis_length=args.rotation_axis_length,
+            rotation_axis_color=args.rotation_axis_color,
+            rotation_axis_width=args.rotation_axis_width,
+            show_rotation_ring=args.rotation_ring,
+            rotation_ring_fraction=args.rotation_ring_fraction,
+            rotation_ring_radius=args.rotation_ring_radius,
+            rotation_ring_radius_offset=args.rotation_ring_radius_offset,
+            rotation_ring_width=args.rotation_ring_width,
+            rotation_ring_color=args.rotation_ring_color,
+            rotation_ring_samples=args.rotation_ring_samples,
+            rotation_ring_cone_height=rotation_ring_cone_height_resolved,
+            rotation_ring_cone_radius=rotation_ring_cone_radius_resolved,
+            rotation_ring_cone_offset=args.rotation_ring_cone_offset,
+            colormap=args.colormap,
+            show_colorbar=not args.no_colorbar,
+            colorbar_format=args.colorbar_format,
+            camera_state=camera_state,
+            title=f"Poster sphere day {args.days:g}",
+        )
+
+    if args.html_output is not None and args.output is None and not interactive:
+        html_output_path = write_html_output(camera_angle_state)
+        print(f"HTML written to         : {html_output_path}")
+        return 0
+
     plotter = render_scene(
         fields,
         contour_levels=contour_levels,
@@ -870,6 +937,8 @@ def main(argv: list[str] | None = None) -> int:
             key=args.save_key,
             transparent_background=args.transparent_background,
             window_size=window_size,
+            camera_state=camera_angle_state,
+            html_save_callback=write_html_output,
         )
         print(f"Interactive save key     : {args.save_key.strip()}")
         if args.output is not None:
@@ -887,11 +956,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"PNG written to          : {output_path}")
 
         if args.html_output is not None:
-            html_output_path = save_html(
-                plotter,
-                args.html_output,
-                window_size=window_size,
-            )
+            html_output_path = write_html_output(camera_angle_state_from_plotter(plotter, camera_angle_state))
             print(f"HTML written to         : {html_output_path}")
 
     if interactive:

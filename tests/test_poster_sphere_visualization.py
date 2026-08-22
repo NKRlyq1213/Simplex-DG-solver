@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+import tempfile
+
 import numpy as np
 import pytest
 
@@ -22,6 +25,7 @@ from simplex_dg.visualization.poster_sphere import (
     resolve_rotation_axis_radii,
     resolve_sigma_physical,
     sample_velocity_arrows,
+    save_interactive_html,
     scalar_color_from_colormap,
 )
 
@@ -457,6 +461,42 @@ def test_current_view_export_can_write_html_without_png():
     assert args.save_current_view is True
     assert args.output is None
     assert args.html_output == "outputs/poster/manual_view.html"
+
+
+def test_save_interactive_html_writes_camera_angle_controls():
+    fields = build_exact_fields(
+        ndiv=1,
+        order=2,
+        table="table1",
+        radius=1.0,
+        sigma=0.35,
+        amplitude=1000.0,
+        omega=np.asarray((0.0, 0.0, 1.0), dtype=float),
+        plot_days=6.0,
+    )
+    with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp_dir:
+        output = Path(tmp_dir) / "poster.html"
+        output_path = save_interactive_html(
+            fields,
+            output,
+            contour_levels=[200.0, 500.0, 800.0],
+            arrow_density=4,
+            camera_state={
+                "azimuth": -45.0,
+                "elevation": 30.0,
+                "distance": 3.5,
+                "roll": 0.0,
+            },
+        )
+        html = output_path.read_text(encoding="utf-8")
+
+        assert output_path == output
+    assert 'id="camera-azimuth"' in html
+    assert 'id="camera-elevation"' in html
+    assert 'id="camera-distance"' in html
+    assert "OrbitControls" in html
+    assert "Dashed initial contours q(t=0): 200, 500, 800" in html
+    assert '"azimuth":-45.0' in html
 
 
 @pytest.mark.parametrize(

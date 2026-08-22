@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from typing import Sequence
 
@@ -1513,31 +1514,729 @@ def save_screenshot(
     return output_path
 
 
-def save_html(
-    plotter,
+def _build_surface_plot_arrays(fields: PosterSphereFields) -> dict[str, np.ndarray]:
+    plot_rs, local_triangles = reference_plot_triangulation(fields.ref.rs)
+
+    all_points: list[np.ndarray] = []
+    all_q0: list[np.ndarray] = []
+    all_q_plot: list[np.ndarray] = []
+    triangles = np.empty((fields.mesh.elements.shape[0] * local_triangles.shape[0], 3), dtype=int)
+    face_row = 0
+
+    for k, vertices in enumerate(fields.geom.element_vertices):
+        X_phys, _, _ = map_reference_to_sphere_element(
+            rs=plot_rs,
+            vertices=vertices,
+            radius=fields.radius,
+        )
+        point_offset = k * plot_rs.shape[0]
+        all_points.append(X_phys / fields.radius)
+        all_q0.append(
+            gaussian_on_sphere(
+                X=X_phys.reshape(1, -1, 3),
+                center=fields.center0,
+                radius=fields.radius,
+                sigma=fields.sigma,
+                amplitude=fields.amplitude,
+            ).reshape(-1)
+        )
+        all_q_plot.append(
+            exact_gaussian_solid_body(
+                X=X_phys.reshape(1, -1, 3),
+                t=fields.t_plot,
+                radius=fields.radius,
+                sigma=fields.sigma,
+                amplitude=fields.amplitude,
+                center0=fields.center0,
+                omega=fields.omega,
+            ).reshape(-1)
+        )
+
+        n_local = local_triangles.shape[0]
+        triangles[face_row : face_row + n_local] = local_triangles + point_offset
+        face_row += n_local
+
+    return {
+        "points": np.vstack(all_points),
+        "triangles": triangles,
+        "q0": np.concatenate(all_q0),
+        "q_plot": np.concatenate(all_q_plot),
+    }
+
+
+def _hex_to_rgb01(color: str) -> tuple[float, float, float]:
+    text = str(color).strip()
+
+    if not text.startswith("#") or len(text) != 7:
+        raise ValueError(f"Expected #RRGGBB color, got {color!r}.")
+
+    return (
+        int(text[1:3], 16) / 255.0,
+        int(text[3:5], 16) / 255.0,
+        int(text[5:7], 16) / 255.0,
+    )
+
+
+def _surface_vertex_colors(
+    values: np.ndarray,
+    *,
+    amplitude: float,
+    colormap: str,
+) -> np.ndarray:
+    colors = [
+        _hex_to_rgb01(scalar_color_from_colormap(float(value), amplitude=amplitude, colormap=colormap))
+        for value in np.asarray(values, dtype=float)
+    ]
+
+    return np.asarray(colors, dtype=float)
+
+
+def _line_segment_points_from_polylines(polylines: Sequence[np.ndarray]) -> np.ndarray:
+    segments: list[np.ndarray] = []
+
+    for line in polylines:
+        points = np.asarray(line, dtype=float)
+
+        if points.shape[0] < 2:
+            continue
+
+        for i in range(points.shape[0] - 1):
+            segments.append(points[[i, i + 1]])
+
+    if not segments:
+        return np.empty((0, 2, 3), dtype=float)
+
+    return np.asarray(segments, dtype=float)
+
+
+def _mesh_edge_segments(
+    mesh: ManifoldMesh,
+    *,
+    edge_samples: int = 24,
+    radius_offset: float = 0.004,
+) -> np.ndarray:
+    edge_samples = max(2, int(edge_samples))
+    edge_pairs = _unique_mesh_edges(mesh.elements)
+    t = np.linspace(0.0, 1.0, edge_samples)
+    polylines: list[np.ndarray] = []
+
+    for va, vb in edge_pairs:
+        p0 = mesh.vertices[int(va)]
+        p1 = mesh.vertices[int(vb)]
+        chord = (1.0 - t[:, None]) * p0[None, :] + t[:, None] * p1[None, :]
+        X_edge = normalize_vectors(chord, radius=mesh.radius)
+        polylines.append((1.0 + float(radius_offset)) * X_edge / mesh.radius)
+
+    return _line_segment_points_from_polylines(polylines)
+
+
+def _level_segment_for_triangle(
+    points: np.ndarray,
+    values: np.ndarray,
+    level: float,
+) -> np.ndarray | None:
+    crossings: list[np.ndarray] = []
+
+    for ia, ib in ((0, 1), (1, 2), (2, 0)):
+        va = float(values[ia])
+        vb = float(values[ib])
+        da = va - float(level)
+        db = vb - float(level)
+
+        if abs(da) <= 1.0e-12 and abs(db) <= 1.0e-12:
+            continue
+
+        if abs(da) <= 1.0e-12:
+            crossings.append(points[ia])
+        elif abs(db) <= 1.0e-12:
+            crossings.append(points[ib])
+        elif da * db < 0.0:
+            theta = (float(level) - va) / (vb - va)
+            crossings.append((1.0 - theta) * points[ia] + theta * points[ib])
+
+    if len(crossings) < 2:
+        return None
+
+    unique = _unique_rows_preserve_order(np.asarray(crossings, dtype=float), decimals=12)
+
+    if unique.shape[0] < 2:
+        return None
+
+    return unique[:2]
+
+
+def _initial_contour_segments_by_level(
+    surface_arrays: dict[str, np.ndarray],
+    *,
+    levels: Sequence[float],
+    radius_offset: float = 0.01,
+) -> list[dict[str, np.ndarray | float]]:
+    points = np.asarray(surface_arrays["points"], dtype=float)
+    triangles = np.asarray(surface_arrays["triangles"], dtype=int)
+    q0 = np.asarray(surface_arrays["q0"], dtype=float)
+    out: list[dict[str, np.ndarray | float]] = []
+
+    for level in np.asarray(list(levels), dtype=float):
+        segments: list[np.ndarray] = []
+
+        for tri in triangles:
+            segment = _level_segment_for_triangle(points[tri], q0[tri], float(level))
+
+            if segment is None:
+                continue
+
+            segments.append(_offset_plot_points(segment, radius_offset=radius_offset))
+
+        segment_array = np.asarray(segments, dtype=float) if segments else np.empty((0, 2, 3), dtype=float)
+        out.append({"level": float(level), "segments": segment_array})
+
+    return out
+
+
+def _rotation_direction_ring_arrays(
+    fields: PosterSphereFields,
+    *,
+    arc_fraction: float,
+    ring_radius: float,
+    radius_offset: float,
+    samples: int,
+    cone_height: float,
+    cone_radius: float,
+    cone_offset: float,
+) -> dict[str, np.ndarray | float]:
+    axis = fields.omega / fields.omega_norm
+    base = normalize_vector(fields.center0, radius=1.0)
+    base_parallel = float(np.dot(base, axis))
+    base_perp = base - base_parallel * axis
+    base_perp_norm = float(np.linalg.norm(base_perp))
+
+    if base_perp_norm <= np.finfo(float).eps:
+        candidate = np.array([1.0, 0.0, 0.0], dtype=float)
+
+        if abs(float(np.dot(candidate, axis))) > 0.9:
+            candidate = np.array([0.0, 1.0, 0.0], dtype=float)
+
+        e1 = candidate - float(np.dot(candidate, axis)) * axis
+        e1 /= np.linalg.norm(e1)
+    else:
+        e1 = base_perp / base_perp_norm
+
+    e2 = np.cross(axis, e1)
+    e2 /= np.linalg.norm(e2)
+    parallel_sign = -1.0 if base_parallel < 0.0 else 1.0
+    parallel_length = parallel_sign * np.sqrt(max(0.0, 1.0 - float(ring_radius) ** 2))
+
+    def point_at_angle(theta: float) -> np.ndarray:
+        return normalize_vector(
+            parallel_length * axis + float(ring_radius) * (np.cos(theta) * e1 + np.sin(theta) * e2),
+            radius=1.0,
+        )
+
+    arc_angle = 2.0 * np.pi * float(arc_fraction)
+    angles = np.linspace(0.0, arc_angle, int(samples))
+    points_unit = np.asarray([point_at_angle(float(theta)) for theta in angles], dtype=float)
+    points_plot = (1.0 + float(radius_offset)) * points_unit
+    arrow_direction = np.cross(axis, points_unit[-1])
+    arrow_direction_norm = float(np.linalg.norm(arrow_direction))
+
+    if arrow_direction_norm <= np.finfo(float).eps:
+        arrow_direction = np.array([1.0, 0.0, 0.0], dtype=float)
+    else:
+        arrow_direction /= arrow_direction_norm
+
+    base_center = points_plot[-1] + float(cone_offset) * arrow_direction
+
+    return {
+        "points": points_plot,
+        "cone_position": base_center + 0.5 * float(cone_height) * arrow_direction,
+        "cone_direction": arrow_direction,
+        "cone_height": float(cone_height),
+        "cone_radius": float(cone_radius),
+    }
+
+
+def _camera_json(camera_state: dict[str, float] | None) -> dict[str, float]:
+    if camera_state is None:
+        return {
+            "azimuth": DEFAULT_CAMERA_AZIMUTH,
+            "elevation": DEFAULT_CAMERA_ELEVATION,
+            "distance": DEFAULT_CAMERA_DISTANCE,
+            "roll": DEFAULT_CAMERA_ROLL,
+        }
+
+    return {
+        "azimuth": float(camera_state.get("azimuth", DEFAULT_CAMERA_AZIMUTH)),
+        "elevation": float(camera_state.get("elevation", DEFAULT_CAMERA_ELEVATION)),
+        "distance": float(camera_state.get("distance", DEFAULT_CAMERA_DISTANCE)),
+        "roll": float(camera_state.get("roll", DEFAULT_CAMERA_ROLL)),
+    }
+
+
+def _flatten_points(points: np.ndarray, *, precision: int = 6) -> list[float]:
+    return np.round(np.asarray(points, dtype=float).reshape(-1), precision).tolist()
+
+
+def save_interactive_html(
+    fields: PosterSphereFields,
     output: str | Path,
     *,
-    window_size: tuple[int, int] | None = None,
+    contour_levels: Sequence[float],
+    arrow_density: int = 80,
+    arrow_scale: float = 0.085,
+    arrow_scale_mode: str = "magnitude",
+    arrow_min_scale: float = 0.35,
+    arrow_max_scale: float = 1.0,
+    arrow_radius_offset: float = DEFAULT_ARROW_RADIUS_OFFSET,
+    edge_opacity: float = 0.36,
+    contour_color_mode: str = "height",
+    contour_width: float = 2.0,
+    axes_mode: str = "none",
+    axes_color: str = "#303030",
+    axes_length: float = 1.28,
+    show_rotation_axis: bool = True,
+    rotation_axis_length: float = 1.35,
+    rotation_axis_color: str = "#d62728",
+    rotation_axis_width: float = 4.0,
+    show_rotation_ring: bool = True,
+    rotation_ring_fraction: float = 0.75,
+    rotation_ring_radius: float = 0.48,
+    rotation_ring_radius_offset: float = 0.032,
+    rotation_ring_width: float = 4.0,
+    rotation_ring_color: str | None = None,
+    rotation_ring_samples: int = 160,
+    rotation_ring_cone_height: float = 0.18,
+    rotation_ring_cone_radius: float = 0.080,
+    rotation_ring_cone_offset: float = 0.0,
+    colormap: str = "gyror",
+    show_colorbar: bool = True,
+    colorbar_format: str = "%.0f",
+    camera_state: dict[str, float] | None = None,
+    title: str = "Poster Sphere",
 ) -> Path:
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    surface_arrays = _build_surface_plot_arrays(fields)
+    surface_colors = _surface_vertex_colors(
+        surface_arrays["q_plot"],
+        amplitude=fields.amplitude,
+        colormap=colormap,
+    )
+    edge_segments = _mesh_edge_segments(fields.mesh)
+    contour_segments = _initial_contour_segments_by_level(
+        surface_arrays,
+        levels=contour_levels,
+    )
+    arrows = sample_velocity_arrows(
+        fields,
+        arrow_density=arrow_density,
+        radius_offset=arrow_radius_offset,
+    )
+    arrow_mode = str(arrow_scale_mode).lower().strip()
 
-    if window_size is not None:
-        plotter.window_size = window_size
-
-    try:
-        trame_component = getattr(plotter, "trame", None)
-        if trame_component is not None and hasattr(trame_component, "export_html"):
-            trame_component.export_html(str(output_path))
+    if arrows.plot_starts.shape[0] > 0:
+        if arrow_mode == "magnitude":
+            arrow_factors = float(arrow_min_scale) + (
+                float(arrow_max_scale) - float(arrow_min_scale)
+            ) * arrows.speed_fraction
         else:
-            plotter.export_html(str(output_path))
-    except ImportError as exc:
-        raise RuntimeError(
-            "HTML export requires PyVista's Trame exporter. Install the extra "
-            "dependencies with `pip install trame-pyvista`."
-        ) from exc
+            arrow_factors = np.ones_like(arrows.speed_fraction)
+
+        arrow_lengths = float(arrow_scale) * arrow_factors
+    else:
+        arrow_lengths = np.empty((0,), dtype=float)
+
+    axis = fields.omega / fields.omega_norm
+    ring_color = rotation_ring_color or rotation_axis_color
+    rotation_ring = _rotation_direction_ring_arrays(
+        fields,
+        arc_fraction=rotation_ring_fraction,
+        ring_radius=rotation_ring_radius,
+        radius_offset=rotation_ring_radius_offset,
+        samples=rotation_ring_samples,
+        cone_height=rotation_ring_cone_height,
+        cone_radius=rotation_ring_cone_radius,
+        cone_offset=rotation_ring_cone_offset,
+    )
+    contour_payload = []
+
+    for contour in contour_segments:
+        level = float(contour["level"])
+        color = "#111111" if contour_color_mode == "neutral" else scalar_color_from_colormap(
+            level,
+            amplitude=fields.amplitude,
+            colormap=colormap,
+        )
+        contour_payload.append(
+            {
+                "level": level,
+                "color": color,
+                "segments": _flatten_points(np.asarray(contour["segments"], dtype=float)),
+            }
+        )
+
+    scene_data = {
+        "title": title,
+        "surface": {
+            "positions": _flatten_points(surface_arrays["points"]),
+            "colors": _flatten_points(surface_colors, precision=5),
+            "indices": np.asarray(surface_arrays["triangles"], dtype=int).reshape(-1).tolist(),
+        },
+        "edges": {
+            "segments": _flatten_points(edge_segments),
+            "color": "#202020",
+            "opacity": float(edge_opacity),
+        },
+        "contours": {
+            "items": contour_payload,
+            "width": float(contour_width),
+            "label": f"Dashed initial contours q(t=0): {format_scalar_values(contour_levels)}",
+        },
+        "arrows": {
+            "starts": _flatten_points(arrows.plot_starts),
+            "directions": _flatten_points(arrows.directions),
+            "lengths": np.round(arrow_lengths, 6).tolist(),
+            "color": "#242424",
+        },
+        "axes": {
+            "mode": str(axes_mode),
+            "color": axes_color,
+            "length": float(axes_length),
+        },
+        "rotationAxis": {
+            "show": bool(show_rotation_axis),
+            "direction": _flatten_points(axis),
+            "length": float(rotation_axis_length),
+            "color": rotation_axis_color,
+            "width": float(rotation_axis_width),
+        },
+        "rotationRing": {
+            "show": bool(show_rotation_ring),
+            "points": _flatten_points(np.asarray(rotation_ring["points"], dtype=float)),
+            "color": ring_color,
+            "width": float(rotation_ring_width),
+            "conePosition": _flatten_points(np.asarray(rotation_ring["cone_position"], dtype=float)),
+            "coneDirection": _flatten_points(np.asarray(rotation_ring["cone_direction"], dtype=float)),
+            "coneHeight": float(rotation_ring["cone_height"]),
+            "coneRadius": float(rotation_ring["cone_radius"]),
+        },
+        "colorbar": {
+            "show": bool(show_colorbar),
+            "amplitude": float(fields.amplitude),
+            "format": colorbar_format,
+            "colors": GYROR_COLORS,
+        },
+        "camera": _camera_json(camera_state),
+    }
+    html = _standalone_html_document(scene_data)
+    output_path.write_text(html, encoding="utf-8")
 
     return output_path
+
+
+def _standalone_html_document(scene_data: dict) -> str:
+    data_json = json.dumps(scene_data, separators=(",", ":"))
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{scene_data["title"]}</title>
+<style>
+html, body {{
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: Arial, sans-serif;
+  background: #ffffff;
+  color: #202020;
+}}
+#poster-viewer {{
+  position: fixed;
+  inset: 0;
+}}
+#camera-panel {{
+  position: fixed;
+  left: 16px;
+  top: 16px;
+  z-index: 10;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(86px, 1fr)) auto;
+  gap: 8px;
+  align-items: end;
+  max-width: calc(100vw - 32px);
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(0, 0, 0, 0.18);
+}}
+#camera-panel label {{
+  display: grid;
+  gap: 3px;
+  font-size: 12px;
+}}
+#camera-panel input {{
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  padding: 5px 6px;
+  border: 1px solid #9a9a9a;
+  background: #ffffff;
+  color: #202020;
+}}
+#camera-panel button {{
+  font: inherit;
+  padding: 6px 10px;
+  border: 1px solid #303030;
+  background: #303030;
+  color: #ffffff;
+  cursor: pointer;
+}}
+#colorbar {{
+  position: fixed;
+  right: 22px;
+  top: 26%;
+  z-index: 8;
+  display: grid;
+  grid-template-columns: 28px auto;
+  gap: 8px;
+  align-items: stretch;
+  font-size: 12px;
+}}
+#colorbar-gradient {{
+  height: 220px;
+  background: linear-gradient(to top, #00a65a 0%, #ffd24d 40%, #ff8c3a 70%, #d62728 100%);
+  border: 1px solid rgba(0, 0, 0, 0.28);
+}}
+#colorbar-ticks {{
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}}
+#contour-label {{
+  position: fixed;
+  right: 22px;
+  top: calc(26% + 238px);
+  z-index: 8;
+  max-width: 280px;
+  font-size: 12px;
+  color: #202020;
+  text-align: right;
+}}
+@media (max-width: 720px) {{
+  #camera-panel {{
+    grid-template-columns: repeat(2, minmax(110px, 1fr));
+  }}
+  #camera-panel button {{
+    grid-column: 1 / -1;
+  }}
+}}
+</style>
+</head>
+<body>
+<div id="poster-viewer"></div>
+<form id="camera-panel">
+  <label>Azimuth<input id="camera-azimuth" type="number" step="1"></label>
+  <label>Elevation<input id="camera-elevation" type="number" step="1"></label>
+  <label>Distance<input id="camera-distance" type="number" step="0.1" min="0.1"></label>
+  <label>Roll<input id="camera-roll" type="number" step="1"></label>
+  <button type="submit">Apply</button>
+</form>
+<div id="colorbar" aria-label="Height colorbar">
+  <div id="colorbar-gradient"></div>
+  <div id="colorbar-ticks"></div>
+</div>
+<div id="contour-label"></div>
+<script type="module">
+import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js";
+import {{ OrbitControls }} from "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js";
+
+const DATA = {data_json};
+const root = document.getElementById("poster-viewer");
+const renderer = new THREE.WebGLRenderer({{ antialias: true, alpha: false }});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.setClearColor(0xffffff, 1);
+root.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(32, 1, 0.01, 100);
+camera.up.set(0, 0, 1);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0, 0);
+controls.enableDamping = true;
+
+function colorHex(hex) {{
+  return new THREE.Color(hex);
+}}
+
+function setBufferAttribute(geometry, name, values, itemSize) {{
+  geometry.setAttribute(name, new THREE.Float32BufferAttribute(values, itemSize));
+}}
+
+function addSurface() {{
+  const geometry = new THREE.BufferGeometry();
+  setBufferAttribute(geometry, "position", DATA.surface.positions, 3);
+  setBufferAttribute(geometry, "color", DATA.surface.colors, 3);
+  geometry.setIndex(DATA.surface.indices);
+  geometry.computeVertexNormals();
+  const material = new THREE.MeshBasicMaterial({{
+    vertexColors: true,
+    side: THREE.DoubleSide
+  }});
+  scene.add(new THREE.Mesh(geometry, material));
+}}
+
+function addLineSegments(values, color, opacity, dashed = false, dashSize = 0.045, gapSize = 0.028) {{
+  if (!values.length) return;
+  const geometry = new THREE.BufferGeometry();
+  setBufferAttribute(geometry, "position", values, 3);
+  const material = dashed
+    ? new THREE.LineDashedMaterial({{ color: colorHex(color), dashSize, gapSize, linewidth: 1 }})
+    : new THREE.LineBasicMaterial({{ color: colorHex(color), transparent: opacity < 1, opacity, linewidth: 1 }});
+  const lines = new THREE.LineSegments(geometry, material);
+  if (dashed) lines.computeLineDistances();
+  scene.add(lines);
+}}
+
+function addPolyline(values, color) {{
+  if (!values.length) return;
+  const geometry = new THREE.BufferGeometry();
+  setBufferAttribute(geometry, "position", values, 3);
+  const material = new THREE.LineBasicMaterial({{ color: colorHex(color), linewidth: 1 }});
+  scene.add(new THREE.Line(geometry, material));
+}}
+
+function addArrow(origin, direction, length, color, headLength, headWidth) {{
+  const dir = new THREE.Vector3(direction[0], direction[1], direction[2]).normalize();
+  const start = new THREE.Vector3(origin[0], origin[1], origin[2]);
+  const arrow = new THREE.ArrowHelper(dir, start, length, colorHex(color), headLength, headWidth);
+  scene.add(arrow);
+}}
+
+function addArrows() {{
+  for (let i = 0; i < DATA.arrows.lengths.length; i += 1) {{
+    const p = 3 * i;
+    const origin = DATA.arrows.starts.slice(p, p + 3);
+    const direction = DATA.arrows.directions.slice(p, p + 3);
+    const length = DATA.arrows.lengths[i];
+    addArrow(origin, direction, length, DATA.arrows.color, 0.32 * length, 0.08 * length);
+  }}
+}}
+
+function addAxes() {{
+  const mode = DATA.axes.mode;
+  if (mode === "none" || mode === "corner") return;
+  const L = DATA.axes.length;
+  addArrow([0, 0, 0], [1, 0, 0], L, DATA.axes.color, 0.10 * L, 0.035 * L);
+  addArrow([0, 0, 0], [0, 1, 0], L, DATA.axes.color, 0.10 * L, 0.035 * L);
+  addArrow([0, 0, 0], [0, 0, 1], L, DATA.axes.color, 0.10 * L, 0.035 * L);
+}}
+
+function addRotationAxis() {{
+  if (!DATA.rotationAxis.show) return;
+  const d = DATA.rotationAxis.direction;
+  const L = DATA.rotationAxis.length;
+  addArrow([-L * d[0], -L * d[1], -L * d[2]], d, 2 * L, DATA.rotationAxis.color, 0.16 * 2 * L, 0.025 * DATA.rotationAxis.width);
+}}
+
+function addRotationRing() {{
+  if (!DATA.rotationRing.show) return;
+  addPolyline(DATA.rotationRing.points, DATA.rotationRing.color);
+  const pos = DATA.rotationRing.conePosition;
+  const dir = DATA.rotationRing.coneDirection;
+  const cone = new THREE.Mesh(
+    new THREE.ConeGeometry(DATA.rotationRing.coneRadius, DATA.rotationRing.coneHeight, 32),
+    new THREE.MeshBasicMaterial({{ color: colorHex(DATA.rotationRing.color) }})
+  );
+  cone.position.set(pos[0], pos[1], pos[2]);
+  const up = new THREE.Vector3(0, 1, 0);
+  const target = new THREE.Vector3(dir[0], dir[1], dir[2]).normalize();
+  cone.quaternion.setFromUnitVectors(up, target);
+  scene.add(cone);
+}}
+
+function setCameraFromValues() {{
+  const az = Number(document.getElementById("camera-azimuth").value) * Math.PI / 180;
+  const el = Number(document.getElementById("camera-elevation").value) * Math.PI / 180;
+  const dist = Math.max(0.1, Number(document.getElementById("camera-distance").value));
+  const roll = Number(document.getElementById("camera-roll").value) * Math.PI / 180;
+  camera.position.set(
+    dist * Math.cos(el) * Math.cos(az),
+    dist * Math.cos(el) * Math.sin(az),
+    dist * Math.sin(el)
+  );
+  camera.up.set(0, 0, 1);
+  camera.lookAt(0, 0, 0);
+  camera.rotateZ(roll);
+  controls.target.set(0, 0, 0);
+  controls.update();
+}}
+
+function updateCameraInputsFromPosition() {{
+  const p = camera.position;
+  const dist = Math.sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
+  if (dist <= 0) return;
+  document.getElementById("camera-azimuth").value = (Math.atan2(p.y, p.x) * 180 / Math.PI).toFixed(2);
+  document.getElementById("camera-elevation").value = (Math.asin(p.z / dist) * 180 / Math.PI).toFixed(2);
+  document.getElementById("camera-distance").value = dist.toFixed(2);
+}}
+
+function initControls() {{
+  document.getElementById("camera-azimuth").value = DATA.camera.azimuth;
+  document.getElementById("camera-elevation").value = DATA.camera.elevation;
+  document.getElementById("camera-distance").value = DATA.camera.distance;
+  document.getElementById("camera-roll").value = DATA.camera.roll;
+  document.getElementById("camera-panel").addEventListener("submit", (event) => {{
+    event.preventDefault();
+    setCameraFromValues();
+  }});
+  controls.addEventListener("end", updateCameraInputsFromPosition);
+}}
+
+function initOverlay() {{
+  const colorbar = document.getElementById("colorbar");
+  colorbar.style.display = DATA.colorbar.show ? "grid" : "none";
+  const ticks = document.getElementById("colorbar-ticks");
+  const amplitude = DATA.colorbar.amplitude;
+  ticks.innerHTML = [amplitude, 0.75 * amplitude, 0.5 * amplitude, 0.25 * amplitude, 0]
+    .map((value) => `<span>${{value.toFixed(0)}}</span>`)
+    .join("");
+  document.getElementById("contour-label").textContent = DATA.contours.label;
+}}
+
+function resize() {{
+  const width = root.clientWidth;
+  const height = root.clientHeight;
+  renderer.setSize(width, height, false);
+  camera.aspect = width / Math.max(1, height);
+  camera.updateProjectionMatrix();
+}}
+
+addSurface();
+addLineSegments(DATA.edges.segments, DATA.edges.color, DATA.edges.opacity);
+for (const contour of DATA.contours.items) {{
+  addLineSegments(contour.segments, contour.color, 1, true);
+}}
+addArrows();
+addAxes();
+addRotationAxis();
+addRotationRing();
+initControls();
+initOverlay();
+resize();
+setCameraFromValues();
+window.addEventListener("resize", resize);
+
+function animate() {{
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}}
+animate();
+</script>
+</body>
+</html>
+"""
 
 
 def format_sanity_checks(fields: PosterSphereFields) -> str:
