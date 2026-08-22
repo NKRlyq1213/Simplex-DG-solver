@@ -17,6 +17,7 @@ from simplex_dg.visualization.poster_sphere import (
     DEFAULT_POSTER_AMPLITUDE,
     EARTH_RADIUS_METERS,
     SURFACE_ARROW_RADIUS_OFFSET,
+    _inject_pyvista_html_camera_controls,
     build_exact_fields,
     camera_position_from_angles,
     format_scalar_values,
@@ -499,13 +500,27 @@ def test_save_interactive_html_writes_camera_angle_controls():
     assert 'id="camera-distance"' in html
     assert 'id="poster-vtk-content" class="content"' in html
     assert 'id="poster-camera-controls-script"' in html
+    assert 'id="poster-camera-status"' in html
     assert "OfflineLocalView.load" in html
     assert "global.renderWindow" in html
+    assert "window.__posterRenderWindow" in html
+    assert "Renderer not ready" in html
     assert "function drawSurface" not in html
     assert "cdn.jsdelivr.net" not in html
     assert "OrbitControls" not in html
     assert '"azimuth":-45.0' in html
     assert html.index('id="poster-vtk-content"') < html.index('id="poster-camera-panel"')
+    reinjected = _inject_pyvista_html_camera_controls(
+        html,
+        camera_state={
+            "azimuth": -45.0,
+            "elevation": 30.0,
+            "distance": 3.5,
+            "roll": 0.0,
+        },
+        title="Poster Sphere",
+    )
+    assert reinjected.count('id="poster-camera-panel"') == 1
 
 
 @pytest.mark.parametrize(

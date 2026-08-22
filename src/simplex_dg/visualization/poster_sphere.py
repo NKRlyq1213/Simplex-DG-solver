@@ -1532,6 +1532,31 @@ def _camera_json(camera_state: dict[str, float] | None) -> dict[str, float]:
     }
 
 
+def _remove_existing_poster_camera_controls(html: str) -> str:
+    start_marker = '<style id="poster-camera-controls-style">'
+    script_marker = '<script id="poster-camera-controls-script">'
+
+    start = html.find(start_marker)
+
+    if start == -1:
+        return html
+
+    script_start = html.find(script_marker, start)
+
+    if script_start == -1:
+        return html
+
+    end = html.find("</script>", script_start)
+
+    if end == -1:
+        return html
+
+    end += len("</script>")
+    trailing = "\n" if html[end : end + 1] == "\n" else ""
+
+    return html[:start] + html[end + len(trailing) :]
+
+
 def _inject_pyvista_html_camera_controls(
     html: str,
     *,
@@ -1543,6 +1568,14 @@ def _inject_pyvista_html_camera_controls(
     title_tag = f"<title>{title_text}</title>"
 
     html = html.replace("<title>VTK.js | Example - OfflineLocalView</title>", title_tag, 1)
+    html = _remove_existing_poster_camera_controls(html)
+
+    if "window.__posterRenderWindow=n;" not in html:
+        html = html.replace(
+            "global.renderWindow=n;",
+            "global.renderWindow=n;window.__posterRenderWindow=n;",
+            1,
+        )
 
     panel = """
 <style id="poster-camera-controls-style">
@@ -1604,6 +1637,12 @@ def _inject_pyvista_html_camera_controls(
 #poster-camera-panel button:hover {
   background: #e9e9e9;
 }
+#poster-camera-status {
+  min-height: 16px;
+  margin-top: 6px;
+  color: #555;
+  font-size: 11px;
+}
 </style>
 <div id="poster-vtk-content" class="content"></div>
 <div id="poster-camera-panel" aria-label="Camera angle controls">
@@ -1615,6 +1654,7 @@ def _inject_pyvista_html_camera_controls(
   <label for="camera-distance">Distance<input id="camera-distance" type="number" step="0.01" min="0.01"></label>
   <label for="camera-roll">Roll<input id="camera-roll" type="number" step="0.1"></label>
   <button id="camera-apply" type="button">Apply</button>
+  <div id="poster-camera-status" aria-live="polite"></div>
 </div>
 <script id="poster-camera-controls-script">
 (function () {
@@ -1631,6 +1671,13 @@ def _inject_pyvista_html_camera_controls(
 
   function node(id) {
     return document.getElementById(id);
+  }
+
+  function setStatus(message) {
+    const status = node("poster-camera-status");
+    if (status) {
+      status.textContent = message || "";
+    }
   }
 
   function finiteNumber(value, fallback) {
@@ -1728,7 +1775,8 @@ def _inject_pyvista_html_camera_controls(
 
   function getRendererTarget() {
     const globalObject = window.global || {};
-    const renderWindow = globalObject.renderWindow || window.renderWindow;
+    const renderWindow =
+      window.__posterRenderWindow || globalObject.renderWindow || window.renderWindow;
 
     if (!renderWindow || typeof renderWindow.getRenderers !== "function") {
       return null;
@@ -1748,7 +1796,7 @@ def _inject_pyvista_html_camera_controls(
     return camera ? { renderWindow: renderWindow, renderer: renderer, camera: camera } : null;
   }
 
-  function waitForRenderer(callback) {
+  function waitForRenderer(callback, onTimeout) {
     const immediate = getRendererTarget();
 
     if (immediate) {
@@ -1766,6 +1814,9 @@ def _inject_pyvista_html_camera_controls(
         callback(target);
       } else if (attempts > 240) {
         window.clearInterval(timer);
+        if (typeof onTimeout === "function") {
+          onTimeout();
+        }
       }
     }, 50);
   }
@@ -1786,8 +1837,20 @@ def _inject_pyvista_html_camera_controls(
     );
     resolved.camera.setViewUp(cameraData.viewUp[0], cameraData.viewUp[1], cameraData.viewUp[2]);
 
+    if (typeof resolved.camera.modified === "function") {
+      resolved.camera.modified();
+    }
+
     if (typeof resolved.renderer.resetCameraClippingRange === "function") {
       resolved.renderer.resetCameraClippingRange();
+    }
+
+    if (typeof resolved.renderer.modified === "function") {
+      resolved.renderer.modified();
+    }
+
+    if (typeof resolved.renderWindow.modified === "function") {
+      resolved.renderWindow.modified();
     }
 
     if (typeof resolved.renderWindow.render === "function") {
@@ -1805,8 +1868,15 @@ def _inject_pyvista_html_camera_controls(
       applyButton.addEventListener("click", function () {
         const state = readInputs();
         setInputs(state);
+        setStatus("Waiting for renderer...");
         waitForRenderer(function (target) {
-          applyPosterCamera(state, target);
+          if (applyPosterCamera(state, target)) {
+            setStatus("Applied");
+          } else {
+            setStatus("Could not update camera");
+          }
+        }, function () {
+          setStatus("Renderer not ready");
         });
       });
     }
