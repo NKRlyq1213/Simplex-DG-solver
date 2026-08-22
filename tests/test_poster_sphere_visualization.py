@@ -464,6 +464,9 @@ def test_current_view_export_can_write_html_without_png():
 
 
 def test_save_interactive_html_writes_camera_angle_controls():
+    pytest.importorskip("pyvista")
+    pytest.importorskip("trame_vtk")
+
     fields = build_exact_fields(
         ndiv=1,
         order=2,
@@ -494,11 +497,12 @@ def test_save_interactive_html_writes_camera_angle_controls():
     assert 'id="camera-azimuth"' in html
     assert 'id="camera-elevation"' in html
     assert 'id="camera-distance"' in html
-    assert "document.createElement(\"canvas\")" in html
-    assert "function drawSurface" in html
+    assert 'id="poster-camera-controls-script"' in html
+    assert "OfflineLocalView.load" in html
+    assert "global.renderWindow" in html
+    assert "function drawSurface" not in html
     assert "cdn.jsdelivr.net" not in html
     assert "OrbitControls" not in html
-    assert "Dashed initial contours q(t=0): 200, 500, 800" in html
     assert '"azimuth":-45.0' in html
 
 

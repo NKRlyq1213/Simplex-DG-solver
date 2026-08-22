@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from html import escape as html_escape
 import json
 from pathlib import Path
 from typing import Sequence
@@ -1514,247 +1515,6 @@ def save_screenshot(
     return output_path
 
 
-def _build_surface_plot_arrays(fields: PosterSphereFields) -> dict[str, np.ndarray]:
-    plot_rs, local_triangles = reference_plot_triangulation(fields.ref.rs)
-
-    all_points: list[np.ndarray] = []
-    all_q0: list[np.ndarray] = []
-    all_q_plot: list[np.ndarray] = []
-    triangles = np.empty((fields.mesh.elements.shape[0] * local_triangles.shape[0], 3), dtype=int)
-    face_row = 0
-
-    for k, vertices in enumerate(fields.geom.element_vertices):
-        X_phys, _, _ = map_reference_to_sphere_element(
-            rs=plot_rs,
-            vertices=vertices,
-            radius=fields.radius,
-        )
-        point_offset = k * plot_rs.shape[0]
-        all_points.append(X_phys / fields.radius)
-        all_q0.append(
-            gaussian_on_sphere(
-                X=X_phys.reshape(1, -1, 3),
-                center=fields.center0,
-                radius=fields.radius,
-                sigma=fields.sigma,
-                amplitude=fields.amplitude,
-            ).reshape(-1)
-        )
-        all_q_plot.append(
-            exact_gaussian_solid_body(
-                X=X_phys.reshape(1, -1, 3),
-                t=fields.t_plot,
-                radius=fields.radius,
-                sigma=fields.sigma,
-                amplitude=fields.amplitude,
-                center0=fields.center0,
-                omega=fields.omega,
-            ).reshape(-1)
-        )
-
-        n_local = local_triangles.shape[0]
-        triangles[face_row : face_row + n_local] = local_triangles + point_offset
-        face_row += n_local
-
-    return {
-        "points": np.vstack(all_points),
-        "triangles": triangles,
-        "q0": np.concatenate(all_q0),
-        "q_plot": np.concatenate(all_q_plot),
-    }
-
-
-def _hex_to_rgb01(color: str) -> tuple[float, float, float]:
-    text = str(color).strip()
-
-    if not text.startswith("#") or len(text) != 7:
-        raise ValueError(f"Expected #RRGGBB color, got {color!r}.")
-
-    return (
-        int(text[1:3], 16) / 255.0,
-        int(text[3:5], 16) / 255.0,
-        int(text[5:7], 16) / 255.0,
-    )
-
-
-def _surface_vertex_colors(
-    values: np.ndarray,
-    *,
-    amplitude: float,
-    colormap: str,
-) -> np.ndarray:
-    colors = [
-        _hex_to_rgb01(scalar_color_from_colormap(float(value), amplitude=amplitude, colormap=colormap))
-        for value in np.asarray(values, dtype=float)
-    ]
-
-    return np.asarray(colors, dtype=float)
-
-
-def _line_segment_points_from_polylines(polylines: Sequence[np.ndarray]) -> np.ndarray:
-    segments: list[np.ndarray] = []
-
-    for line in polylines:
-        points = np.asarray(line, dtype=float)
-
-        if points.shape[0] < 2:
-            continue
-
-        for i in range(points.shape[0] - 1):
-            segments.append(points[[i, i + 1]])
-
-    if not segments:
-        return np.empty((0, 2, 3), dtype=float)
-
-    return np.asarray(segments, dtype=float)
-
-
-def _mesh_edge_segments(
-    mesh: ManifoldMesh,
-    *,
-    edge_samples: int = 24,
-    radius_offset: float = 0.004,
-) -> np.ndarray:
-    edge_samples = max(2, int(edge_samples))
-    edge_pairs = _unique_mesh_edges(mesh.elements)
-    t = np.linspace(0.0, 1.0, edge_samples)
-    polylines: list[np.ndarray] = []
-
-    for va, vb in edge_pairs:
-        p0 = mesh.vertices[int(va)]
-        p1 = mesh.vertices[int(vb)]
-        chord = (1.0 - t[:, None]) * p0[None, :] + t[:, None] * p1[None, :]
-        X_edge = normalize_vectors(chord, radius=mesh.radius)
-        polylines.append((1.0 + float(radius_offset)) * X_edge / mesh.radius)
-
-    return _line_segment_points_from_polylines(polylines)
-
-
-def _level_segment_for_triangle(
-    points: np.ndarray,
-    values: np.ndarray,
-    level: float,
-) -> np.ndarray | None:
-    crossings: list[np.ndarray] = []
-
-    for ia, ib in ((0, 1), (1, 2), (2, 0)):
-        va = float(values[ia])
-        vb = float(values[ib])
-        da = va - float(level)
-        db = vb - float(level)
-
-        if abs(da) <= 1.0e-12 and abs(db) <= 1.0e-12:
-            continue
-
-        if abs(da) <= 1.0e-12:
-            crossings.append(points[ia])
-        elif abs(db) <= 1.0e-12:
-            crossings.append(points[ib])
-        elif da * db < 0.0:
-            theta = (float(level) - va) / (vb - va)
-            crossings.append((1.0 - theta) * points[ia] + theta * points[ib])
-
-    if len(crossings) < 2:
-        return None
-
-    unique = _unique_rows_preserve_order(np.asarray(crossings, dtype=float), decimals=12)
-
-    if unique.shape[0] < 2:
-        return None
-
-    return unique[:2]
-
-
-def _initial_contour_segments_by_level(
-    surface_arrays: dict[str, np.ndarray],
-    *,
-    levels: Sequence[float],
-    radius_offset: float = 0.01,
-) -> list[dict[str, np.ndarray | float]]:
-    points = np.asarray(surface_arrays["points"], dtype=float)
-    triangles = np.asarray(surface_arrays["triangles"], dtype=int)
-    q0 = np.asarray(surface_arrays["q0"], dtype=float)
-    out: list[dict[str, np.ndarray | float]] = []
-
-    for level in np.asarray(list(levels), dtype=float):
-        segments: list[np.ndarray] = []
-
-        for tri in triangles:
-            segment = _level_segment_for_triangle(points[tri], q0[tri], float(level))
-
-            if segment is None:
-                continue
-
-            segments.append(_offset_plot_points(segment, radius_offset=radius_offset))
-
-        segment_array = np.asarray(segments, dtype=float) if segments else np.empty((0, 2, 3), dtype=float)
-        out.append({"level": float(level), "segments": segment_array})
-
-    return out
-
-
-def _rotation_direction_ring_arrays(
-    fields: PosterSphereFields,
-    *,
-    arc_fraction: float,
-    ring_radius: float,
-    radius_offset: float,
-    samples: int,
-    cone_height: float,
-    cone_radius: float,
-    cone_offset: float,
-) -> dict[str, np.ndarray | float]:
-    axis = fields.omega / fields.omega_norm
-    base = normalize_vector(fields.center0, radius=1.0)
-    base_parallel = float(np.dot(base, axis))
-    base_perp = base - base_parallel * axis
-    base_perp_norm = float(np.linalg.norm(base_perp))
-
-    if base_perp_norm <= np.finfo(float).eps:
-        candidate = np.array([1.0, 0.0, 0.0], dtype=float)
-
-        if abs(float(np.dot(candidate, axis))) > 0.9:
-            candidate = np.array([0.0, 1.0, 0.0], dtype=float)
-
-        e1 = candidate - float(np.dot(candidate, axis)) * axis
-        e1 /= np.linalg.norm(e1)
-    else:
-        e1 = base_perp / base_perp_norm
-
-    e2 = np.cross(axis, e1)
-    e2 /= np.linalg.norm(e2)
-    parallel_sign = -1.0 if base_parallel < 0.0 else 1.0
-    parallel_length = parallel_sign * np.sqrt(max(0.0, 1.0 - float(ring_radius) ** 2))
-
-    def point_at_angle(theta: float) -> np.ndarray:
-        return normalize_vector(
-            parallel_length * axis + float(ring_radius) * (np.cos(theta) * e1 + np.sin(theta) * e2),
-            radius=1.0,
-        )
-
-    arc_angle = 2.0 * np.pi * float(arc_fraction)
-    angles = np.linspace(0.0, arc_angle, int(samples))
-    points_unit = np.asarray([point_at_angle(float(theta)) for theta in angles], dtype=float)
-    points_plot = (1.0 + float(radius_offset)) * points_unit
-    arrow_direction = np.cross(axis, points_unit[-1])
-    arrow_direction_norm = float(np.linalg.norm(arrow_direction))
-
-    if arrow_direction_norm <= np.finfo(float).eps:
-        arrow_direction = np.array([1.0, 0.0, 0.0], dtype=float)
-    else:
-        arrow_direction /= arrow_direction_norm
-
-    base_center = points_plot[-1] + float(cone_offset) * arrow_direction
-
-    return {
-        "points": points_plot,
-        "cone_position": base_center + 0.5 * float(cone_height) * arrow_direction,
-        "cone_direction": arrow_direction,
-        "cone_height": float(cone_height),
-        "cone_radius": float(cone_radius),
-    }
-
-
 def _camera_json(camera_state: dict[str, float] | None) -> dict[str, float]:
     if camera_state is None:
         return {
@@ -1772,8 +1532,299 @@ def _camera_json(camera_state: dict[str, float] | None) -> dict[str, float]:
     }
 
 
-def _flatten_points(points: np.ndarray, *, precision: int = 6) -> list[float]:
-    return np.round(np.asarray(points, dtype=float).reshape(-1), precision).tolist()
+def _inject_pyvista_html_camera_controls(
+    html: str,
+    *,
+    camera_state: dict[str, float],
+    title: str,
+) -> str:
+    camera_json = json.dumps(camera_state, separators=(",", ":"))
+    title_text = html_escape(str(title), quote=False)
+    title_tag = f"<title>{title_text}</title>"
+
+    html = html.replace("<title>VTK.js | Example - OfflineLocalView</title>", title_tag, 1)
+
+    panel = """
+<style id="poster-camera-controls-style">
+#poster-camera-panel {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 2147483647;
+  width: 220px;
+  box-sizing: border-box;
+  padding: 9px 10px 10px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #111;
+  font: 12px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.16);
+}
+#poster-camera-panel .poster-camera-title {
+  margin: 0 0 7px;
+  font-weight: 650;
+}
+#poster-camera-panel label {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  margin: 5px 0;
+}
+#poster-camera-panel input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 3px 5px;
+  border: 1px solid rgba(0, 0, 0, 0.28);
+  border-radius: 4px;
+  background: #fff;
+  color: #111;
+  font: inherit;
+}
+#poster-camera-panel button {
+  width: 100%;
+  margin-top: 7px;
+  padding: 5px 8px;
+  border: 1px solid rgba(0, 0, 0, 0.32);
+  border-radius: 4px;
+  background: #f4f4f4;
+  color: #111;
+  font: inherit;
+  cursor: pointer;
+}
+#poster-camera-panel button:hover {
+  background: #e9e9e9;
+}
+</style>
+<div id="poster-camera-panel" aria-label="Camera angle controls">
+  <div class="poster-camera-title">Camera angles</div>
+  <label for="camera-azimuth">Azimuth<input id="camera-azimuth" type="number" step="0.1"></label>
+  <label for="camera-elevation">
+    Elevation<input id="camera-elevation" type="number" step="0.1" min="-89.999" max="89.999">
+  </label>
+  <label for="camera-distance">Distance<input id="camera-distance" type="number" step="0.01" min="0.01"></label>
+  <label for="camera-roll">Roll<input id="camera-roll" type="number" step="0.1"></label>
+  <button id="camera-apply" type="button">Apply</button>
+</div>
+<script id="poster-camera-controls-script">
+(function () {
+  "use strict";
+
+  const POSTER_CAMERA = __POSTER_CAMERA__;
+  const DEG_TO_RAD = Math.PI / 180.0;
+  const INPUT_IDS = {
+    azimuth: "camera-azimuth",
+    elevation: "camera-elevation",
+    distance: "camera-distance",
+    roll: "camera-roll"
+  };
+
+  function node(id) {
+    return document.getElementById(id);
+  }
+
+  function finiteNumber(value, fallback) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+
+  function displayNumber(value) {
+    return Number(value).toFixed(6).replace(/\\.?0+$/, "");
+  }
+
+  function setInputs(state) {
+    Object.keys(INPUT_IDS).forEach(function (key) {
+      const input = node(INPUT_IDS[key]);
+      if (input) {
+        input.value = displayNumber(state[key]);
+      }
+    });
+  }
+
+  function readInputs() {
+    const state = {
+      azimuth: finiteNumber(node(INPUT_IDS.azimuth)?.value, POSTER_CAMERA.azimuth),
+      elevation: finiteNumber(node(INPUT_IDS.elevation)?.value, POSTER_CAMERA.elevation),
+      distance: finiteNumber(node(INPUT_IDS.distance)?.value, POSTER_CAMERA.distance),
+      roll: finiteNumber(node(INPUT_IDS.roll)?.value, POSTER_CAMERA.roll)
+    };
+    state.elevation = Math.max(-89.999, Math.min(89.999, state.elevation));
+    state.distance = Math.max(0.000001, state.distance);
+    return state;
+  }
+
+  function dot(a, b) {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  }
+
+  function cross(a, b) {
+    return [
+      a[1] * b[2] - a[2] * b[1],
+      a[2] * b[0] - a[0] * b[2],
+      a[0] * b[1] - a[1] * b[0]
+    ];
+  }
+
+  function normalize(v) {
+    const length = Math.hypot(v[0], v[1], v[2]);
+    if (!Number.isFinite(length) || length <= 0.0) {
+      return [0.0, 0.0, 0.0];
+    }
+    return [v[0] / length, v[1] / length, v[2] / length];
+  }
+
+  function rotateAroundAxis(v, axis, angle) {
+    const c = Math.cos(angle);
+    const s = Math.sin(angle);
+    const axisCrossV = cross(axis, v);
+    const axisDotV = dot(axis, v);
+    return normalize([
+      v[0] * c + axisCrossV[0] * s + axis[0] * axisDotV * (1.0 - c),
+      v[1] * c + axisCrossV[1] * s + axis[1] * axisDotV * (1.0 - c),
+      v[2] * c + axisCrossV[2] * s + axis[2] * axisDotV * (1.0 - c)
+    ]);
+  }
+
+  function cameraFromAngles(state) {
+    const azimuth = state.azimuth * DEG_TO_RAD;
+    const elevation = state.elevation * DEG_TO_RAD;
+    const distance = Math.max(0.000001, state.distance);
+    const direction = [
+      Math.cos(elevation) * Math.cos(azimuth),
+      Math.cos(elevation) * Math.sin(azimuth),
+      Math.sin(elevation)
+    ];
+    const position = [
+      distance * direction[0],
+      distance * direction[1],
+      distance * direction[2]
+    ];
+    const viewDirection = normalize([-direction[0], -direction[1], -direction[2]]);
+    const zUp = [0.0, 0.0, 1.0];
+    const worldUp = Math.abs(dot(viewDirection, zUp)) > 0.96 ? [0.0, 1.0, 0.0] : zUp;
+    const right = normalize(cross(viewDirection, worldUp));
+    let viewUp = normalize(cross(right, viewDirection));
+
+    if (state.roll !== 0.0) {
+      viewUp = rotateAroundAxis(viewUp, viewDirection, state.roll * DEG_TO_RAD);
+    }
+
+    return {
+      position: position,
+      focalPoint: [0.0, 0.0, 0.0],
+      viewUp: viewUp
+    };
+  }
+
+  function getRendererTarget() {
+    const globalObject = window.global || {};
+    const renderWindow = globalObject.renderWindow || window.renderWindow;
+
+    if (!renderWindow || typeof renderWindow.getRenderers !== "function") {
+      return null;
+    }
+
+    const renderers = renderWindow.getRenderers();
+
+    if (!renderers || renderers.length === 0) {
+      return null;
+    }
+
+    const renderer = renderers.find(function (item) {
+      return !item.getInteractive || item.getInteractive();
+    }) || renderers[0];
+    const camera = renderer && renderer.getActiveCamera ? renderer.getActiveCamera() : null;
+
+    return camera ? { renderWindow: renderWindow, renderer: renderer, camera: camera } : null;
+  }
+
+  function waitForRenderer(callback) {
+    const immediate = getRendererTarget();
+
+    if (immediate) {
+      callback(immediate);
+      return;
+    }
+
+    let attempts = 0;
+    const timer = window.setInterval(function () {
+      const target = getRendererTarget();
+      attempts += 1;
+
+      if (target) {
+        window.clearInterval(timer);
+        callback(target);
+      } else if (attempts > 240) {
+        window.clearInterval(timer);
+      }
+    }, 50);
+  }
+
+  function applyPosterCamera(state, target) {
+    const resolved = target || getRendererTarget();
+
+    if (!resolved) {
+      return false;
+    }
+
+    const cameraData = cameraFromAngles(state);
+    resolved.camera.setPosition(cameraData.position[0], cameraData.position[1], cameraData.position[2]);
+    resolved.camera.setFocalPoint(
+      cameraData.focalPoint[0],
+      cameraData.focalPoint[1],
+      cameraData.focalPoint[2]
+    );
+    resolved.camera.setViewUp(cameraData.viewUp[0], cameraData.viewUp[1], cameraData.viewUp[2]);
+
+    if (typeof resolved.renderer.resetCameraClippingRange === "function") {
+      resolved.renderer.resetCameraClippingRange();
+    }
+
+    if (typeof resolved.renderWindow.render === "function") {
+      resolved.renderWindow.render();
+    }
+
+    return true;
+  }
+
+  function initCameraPanel() {
+    setInputs(POSTER_CAMERA);
+    const applyButton = node("camera-apply");
+
+    if (applyButton) {
+      applyButton.addEventListener("click", function () {
+        const state = readInputs();
+        setInputs(state);
+        waitForRenderer(function (target) {
+          applyPosterCamera(state, target);
+        });
+      });
+    }
+
+    waitForRenderer(function (target) {
+      applyPosterCamera(POSTER_CAMERA, target);
+    });
+  }
+
+  window.applyPosterCamera = function (state) {
+    return applyPosterCamera(state || readInputs());
+  };
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initCameraPanel);
+  } else {
+    initCameraPanel();
+  }
+})();
+</script>
+""".replace("__POSTER_CAMERA__", camera_json)
+
+    if "</body>" in html:
+        return html.replace("</body>", f"{panel}\n  </body>", 1)
+
+    return f"{html}\n{panel}"
 
 
 def save_interactive_html(
@@ -1786,17 +1837,33 @@ def save_interactive_html(
     arrow_scale_mode: str = "magnitude",
     arrow_min_scale: float = 0.35,
     arrow_max_scale: float = 1.0,
+    arrow_tip_length: float = 0.30,
+    arrow_tip_radius: float = 0.045,
+    arrow_shaft_radius: float = 0.014,
     arrow_radius_offset: float = DEFAULT_ARROW_RADIUS_OFFSET,
+    edge_width: float = 1.0,
     edge_opacity: float = 0.36,
     contour_color_mode: str = "height",
     contour_width: float = 2.0,
+    font_size: int = 12,
+    show_contour_label: bool = True,
+    contour_label_position: str | tuple[float, float] = "below_colorbar",
+    contour_label_font_size: int | None = None,
     axes_mode: str = "none",
+    axes_label_font_size: int | None = None,
     axes_color: str = "#303030",
     axes_length: float = 1.28,
+    axes_label_offset: float = 0.08,
+    axes_tip_length: float = 0.16,
+    axes_tip_radius: float = 0.025,
+    axes_shaft_radius: float = 0.0075,
     show_rotation_axis: bool = True,
     rotation_axis_length: float = 1.35,
     rotation_axis_color: str = "#d62728",
     rotation_axis_width: float = 4.0,
+    rotation_axis_tip_length: float = 0.16,
+    rotation_axis_tip_radius: float | None = None,
+    rotation_axis_shaft_radius: float | None = None,
     show_rotation_ring: bool = True,
     rotation_ring_fraction: float = 0.75,
     rotation_ring_radius: float = 0.48,
@@ -1807,679 +1874,114 @@ def save_interactive_html(
     rotation_ring_cone_height: float = 0.18,
     rotation_ring_cone_radius: float = 0.080,
     rotation_ring_cone_offset: float = 0.0,
+    rotation_ring_cone_resolution: int = 32,
+    dash_length: float = 0.045,
+    gap_length: float = 0.028,
     colormap: str = "gyror",
     show_colorbar: bool = True,
+    colorbar_height: float = 0.38,
+    colorbar_width: float = 0.07,
+    colorbar_position_x: float = 0.88,
+    colorbar_position_y: float = 0.28,
+    colorbar_label_font_size: int | None = None,
+    colorbar_title_font_size: int | None = None,
+    colorbar_n_labels: int = 5,
     colorbar_format: str = "%.0f",
+    enable_lighting: bool = False,
+    background: str = "white",
+    window_size: tuple[int, int] = (1600, 1200),
+    off_screen: bool = True,
     camera_state: dict[str, float] | None = None,
     title: str = "Poster Sphere",
 ) -> Path:
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    surface_arrays = _build_surface_plot_arrays(fields)
-    surface_colors = _surface_vertex_colors(
-        surface_arrays["q_plot"],
-        amplitude=fields.amplitude,
-        colormap=colormap,
-    )
-    edge_segments = _mesh_edge_segments(fields.mesh)
-    contour_segments = _initial_contour_segments_by_level(
-        surface_arrays,
-        levels=contour_levels,
-    )
-    arrows = sample_velocity_arrows(
+
+    camera = _camera_json(camera_state)
+    plotter = render_scene(
         fields,
+        contour_levels=contour_levels,
         arrow_density=arrow_density,
-        radius_offset=arrow_radius_offset,
+        arrow_scale=arrow_scale,
+        arrow_scale_mode=arrow_scale_mode,
+        arrow_min_scale=arrow_min_scale,
+        arrow_max_scale=arrow_max_scale,
+        arrow_tip_length=arrow_tip_length,
+        arrow_tip_radius=arrow_tip_radius,
+        arrow_shaft_radius=arrow_shaft_radius,
+        arrow_radius_offset=arrow_radius_offset,
+        edge_width=edge_width,
+        edge_opacity=edge_opacity,
+        contour_color_mode=contour_color_mode,
+        contour_width=contour_width,
+        font_size=font_size,
+        show_contour_label=show_contour_label,
+        contour_label_position=contour_label_position,
+        contour_label_font_size=contour_label_font_size,
+        axes_mode=axes_mode,
+        axes_label_font_size=axes_label_font_size,
+        axes_color=axes_color,
+        axes_length=axes_length,
+        axes_label_offset=axes_label_offset,
+        axes_tip_length=axes_tip_length,
+        axes_tip_radius=axes_tip_radius,
+        axes_shaft_radius=axes_shaft_radius,
+        show_rotation_axis=show_rotation_axis,
+        rotation_axis_length=rotation_axis_length,
+        rotation_axis_color=rotation_axis_color,
+        rotation_axis_width=rotation_axis_width,
+        rotation_axis_tip_length=rotation_axis_tip_length,
+        rotation_axis_tip_radius=rotation_axis_tip_radius,
+        rotation_axis_shaft_radius=rotation_axis_shaft_radius,
+        show_rotation_ring=show_rotation_ring,
+        rotation_ring_fraction=rotation_ring_fraction,
+        rotation_ring_radius=rotation_ring_radius,
+        rotation_ring_radius_offset=rotation_ring_radius_offset,
+        rotation_ring_width=rotation_ring_width,
+        rotation_ring_color=rotation_ring_color,
+        rotation_ring_samples=rotation_ring_samples,
+        rotation_ring_cone_height=rotation_ring_cone_height,
+        rotation_ring_cone_radius=rotation_ring_cone_radius,
+        rotation_ring_cone_offset=rotation_ring_cone_offset,
+        rotation_ring_cone_resolution=rotation_ring_cone_resolution,
+        dash_length=dash_length,
+        gap_length=gap_length,
+        colormap=colormap,
+        show_colorbar=show_colorbar,
+        colorbar_height=colorbar_height,
+        colorbar_width=colorbar_width,
+        colorbar_position_x=colorbar_position_x,
+        colorbar_position_y=colorbar_position_y,
+        colorbar_label_font_size=colorbar_label_font_size,
+        colorbar_title_font_size=colorbar_title_font_size,
+        colorbar_n_labels=colorbar_n_labels,
+        colorbar_format=colorbar_format,
+        enable_lighting=enable_lighting,
+        background=background,
+        window_size=window_size,
+        off_screen=off_screen,
     )
-    arrow_mode = str(arrow_scale_mode).lower().strip()
 
-    if arrows.plot_starts.shape[0] > 0:
-        if arrow_mode == "magnitude":
-            arrow_factors = float(arrow_min_scale) + (
-                float(arrow_max_scale) - float(arrow_min_scale)
-            ) * arrows.speed_fraction
-        else:
-            arrow_factors = np.ones_like(arrows.speed_fraction)
+    try:
+        configure_camera_from_angles(
+            plotter,
+            azimuth=camera["azimuth"],
+            elevation=camera["elevation"],
+            distance=camera["distance"],
+            roll=camera["roll"],
+        )
+        plotter.export_html(str(output_path))
+    finally:
+        plotter.close()
 
-        arrow_lengths = float(arrow_scale) * arrow_factors
-    else:
-        arrow_lengths = np.empty((0,), dtype=float)
-
-    axis = fields.omega / fields.omega_norm
-    ring_color = rotation_ring_color or rotation_axis_color
-    rotation_ring = _rotation_direction_ring_arrays(
-        fields,
-        arc_fraction=rotation_ring_fraction,
-        ring_radius=rotation_ring_radius,
-        radius_offset=rotation_ring_radius_offset,
-        samples=rotation_ring_samples,
-        cone_height=rotation_ring_cone_height,
-        cone_radius=rotation_ring_cone_radius,
-        cone_offset=rotation_ring_cone_offset,
+    html = _inject_pyvista_html_camera_controls(
+        output_path.read_text(encoding="utf-8"),
+        camera_state=camera,
+        title=title,
     )
-    contour_payload = []
-
-    for contour in contour_segments:
-        level = float(contour["level"])
-        color = "#111111" if contour_color_mode == "neutral" else scalar_color_from_colormap(
-            level,
-            amplitude=fields.amplitude,
-            colormap=colormap,
-        )
-        contour_payload.append(
-            {
-                "level": level,
-                "color": color,
-                "segments": _flatten_points(np.asarray(contour["segments"], dtype=float)),
-            }
-        )
-
-    scene_data = {
-        "title": title,
-        "surface": {
-            "positions": _flatten_points(surface_arrays["points"]),
-            "colors": _flatten_points(surface_colors, precision=5),
-            "indices": np.asarray(surface_arrays["triangles"], dtype=int).reshape(-1).tolist(),
-        },
-        "edges": {
-            "segments": _flatten_points(edge_segments),
-            "color": "#202020",
-            "opacity": float(edge_opacity),
-        },
-        "contours": {
-            "items": contour_payload,
-            "width": float(contour_width),
-            "label": f"Dashed initial contours q(t=0): {format_scalar_values(contour_levels)}",
-        },
-        "arrows": {
-            "starts": _flatten_points(arrows.plot_starts),
-            "directions": _flatten_points(arrows.directions),
-            "lengths": np.round(arrow_lengths, 6).tolist(),
-            "color": "#242424",
-        },
-        "axes": {
-            "mode": str(axes_mode),
-            "color": axes_color,
-            "length": float(axes_length),
-        },
-        "rotationAxis": {
-            "show": bool(show_rotation_axis),
-            "direction": _flatten_points(axis),
-            "length": float(rotation_axis_length),
-            "color": rotation_axis_color,
-            "width": float(rotation_axis_width),
-        },
-        "rotationRing": {
-            "show": bool(show_rotation_ring),
-            "points": _flatten_points(np.asarray(rotation_ring["points"], dtype=float)),
-            "color": ring_color,
-            "width": float(rotation_ring_width),
-            "conePosition": _flatten_points(np.asarray(rotation_ring["cone_position"], dtype=float)),
-            "coneDirection": _flatten_points(np.asarray(rotation_ring["cone_direction"], dtype=float)),
-            "coneHeight": float(rotation_ring["cone_height"]),
-            "coneRadius": float(rotation_ring["cone_radius"]),
-        },
-        "colorbar": {
-            "show": bool(show_colorbar),
-            "amplitude": float(fields.amplitude),
-            "format": colorbar_format,
-            "colors": GYROR_COLORS,
-        },
-        "camera": _camera_json(camera_state),
-    }
-    html = _standalone_html_document(scene_data)
     output_path.write_text(html, encoding="utf-8")
 
     return output_path
-
-
-def _standalone_html_document(scene_data: dict) -> str:
-    data_json = json.dumps(scene_data, separators=(",", ":"))
-
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{scene_data["title"]}</title>
-<style>
-html, body {{
-  margin: 0;
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
-  font-family: Arial, sans-serif;
-  background: #ffffff;
-  color: #202020;
-}}
-#poster-viewer {{
-  position: fixed;
-  inset: 0;
-}}
-#poster-viewer canvas {{
-  display: block;
-  width: 100%;
-  height: 100%;
-  touch-action: none;
-}}
-#camera-panel {{
-  position: fixed;
-  left: 16px;
-  top: 16px;
-  z-index: 10;
-  display: grid;
-  grid-template-columns: repeat(4, minmax(86px, 1fr)) auto;
-  gap: 8px;
-  align-items: end;
-  max-width: calc(100vw - 32px);
-  padding: 10px;
-  background: rgba(255, 255, 255, 0.9);
-  border: 1px solid rgba(0, 0, 0, 0.18);
-}}
-#camera-panel label {{
-  display: grid;
-  gap: 3px;
-  font-size: 12px;
-}}
-#camera-panel input {{
-  width: 100%;
-  box-sizing: border-box;
-  font: inherit;
-  padding: 5px 6px;
-  border: 1px solid #9a9a9a;
-  background: #ffffff;
-  color: #202020;
-}}
-#camera-panel button {{
-  font: inherit;
-  padding: 6px 10px;
-  border: 1px solid #303030;
-  background: #303030;
-  color: #ffffff;
-  cursor: pointer;
-}}
-#colorbar {{
-  position: fixed;
-  right: 22px;
-  top: 26%;
-  z-index: 8;
-  display: grid;
-  grid-template-columns: 28px auto;
-  gap: 8px;
-  align-items: stretch;
-  font-size: 12px;
-}}
-#colorbar-gradient {{
-  height: 220px;
-  background: linear-gradient(to top, #00a65a 0%, #ffd24d 40%, #ff8c3a 70%, #d62728 100%);
-  border: 1px solid rgba(0, 0, 0, 0.28);
-}}
-#colorbar-ticks {{
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-}}
-#contour-label {{
-  position: fixed;
-  right: 22px;
-  top: calc(26% + 238px);
-  z-index: 8;
-  max-width: 280px;
-  font-size: 12px;
-  color: #202020;
-  text-align: right;
-}}
-@media (max-width: 720px) {{
-  #camera-panel {{
-    grid-template-columns: repeat(2, minmax(110px, 1fr));
-  }}
-  #camera-panel button {{
-    grid-column: 1 / -1;
-  }}
-}}
-</style>
-</head>
-<body>
-<div id="poster-viewer"></div>
-<form id="camera-panel">
-  <label>Azimuth<input id="camera-azimuth" type="number" step="1"></label>
-  <label>Elevation<input id="camera-elevation" type="number" step="1"></label>
-  <label>Distance<input id="camera-distance" type="number" step="0.1" min="0.1"></label>
-  <label>Roll<input id="camera-roll" type="number" step="1"></label>
-  <button type="submit">Apply</button>
-</form>
-<div id="colorbar" aria-label="Height colorbar">
-  <div id="colorbar-gradient"></div>
-  <div id="colorbar-ticks"></div>
-</div>
-<div id="contour-label"></div>
-<script>
-const DATA = {data_json};
-const root = document.getElementById("poster-viewer");
-const canvas = document.createElement("canvas");
-canvas.setAttribute("aria-label", "Interactive poster sphere");
-root.appendChild(canvas);
-const ctx = canvas.getContext("2d");
-const state = {{
-  azimuth: DATA.camera.azimuth,
-  elevation: DATA.camera.elevation,
-  distance: DATA.camera.distance,
-  roll: DATA.camera.roll
-}};
-let dragStart = null;
-
-function clamp(value, low, high) {{
-  return Math.min(high, Math.max(low, value));
-}}
-
-function add(a, b) {{
-  return [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
-}}
-
-function scale(a, value) {{
-  return [a[0] * value, a[1] * value, a[2] * value];
-}}
-
-function dot(a, b) {{
-  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-}}
-
-function cross(a, b) {{
-  return [
-    a[1] * b[2] - a[2] * b[1],
-    a[2] * b[0] - a[0] * b[2],
-    a[0] * b[1] - a[1] * b[0]
-  ];
-}}
-
-function normalize(a) {{
-  const length = Math.hypot(a[0], a[1], a[2]);
-  if (length <= 1e-12) return [1, 0, 0];
-  return [a[0] / length, a[1] / length, a[2] / length];
-}}
-
-function pointAt(flatValues, pointIndex) {{
-  const p = pointIndex * 3;
-  return [flatValues[p], flatValues[p + 1], flatValues[p + 2]];
-}}
-
-function pointFromOffset(flatValues, offset) {{
-  return [flatValues[offset], flatValues[offset + 1], flatValues[offset + 2]];
-}}
-
-function colorAt(pointIndex) {{
-  const p = pointIndex * 3;
-  const colors = DATA.surface.colors;
-  return [
-    Math.round(255 * colors[p]),
-    Math.round(255 * colors[p + 1]),
-    Math.round(255 * colors[p + 2])
-  ];
-}}
-
-function averageTriangleColor(i0, i1, i2) {{
-  const c0 = colorAt(i0);
-  const c1 = colorAt(i1);
-  const c2 = colorAt(i2);
-  return "rgb("
-    + Math.round((c0[0] + c1[0] + c2[0]) / 3) + ","
-    + Math.round((c0[1] + c1[1] + c2[1]) / 3) + ","
-    + Math.round((c0[2] + c1[2] + c2[2]) / 3) + ")";
-}}
-
-function hexToRgba(hex, opacity) {{
-  const text = String(hex || "#000000").replace("#", "");
-  const r = parseInt(text.slice(0, 2), 16);
-  const g = parseInt(text.slice(2, 4), 16);
-  const b = parseInt(text.slice(4, 6), 16);
-  return "rgba(" + r + "," + g + "," + b + "," + opacity + ")";
-}}
-
-function canvasSize() {{
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const width = Math.max(1, root.clientWidth);
-  const height = Math.max(1, root.clientHeight);
-  canvas.style.width = width + "px";
-  canvas.style.height = height + "px";
-  canvas.width = Math.round(width * dpr);
-  canvas.height = Math.round(height * dpr);
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  return {{ width, height }};
-}}
-
-function cameraBasis() {{
-  const az = Number(state.azimuth) * Math.PI / 180;
-  const el = Number(state.elevation) * Math.PI / 180;
-  const roll = Number(state.roll) * Math.PI / 180;
-  const eye = normalize([
-    Math.cos(el) * Math.cos(az),
-    Math.cos(el) * Math.sin(az),
-    Math.sin(el)
-  ]);
-  const forward = scale(eye, -1);
-  let right = normalize(cross(forward, [0, 0, 1]));
-  if (Math.hypot(right[0], right[1], right[2]) <= 1e-12) {{
-    right = [1, 0, 0];
-  }}
-  const up = normalize(cross(right, forward));
-  const cr = Math.cos(roll);
-  const sr = Math.sin(roll);
-  return {{
-    eye,
-    forward,
-    right: add(scale(right, cr), scale(up, sr)),
-    up: add(scale(up, cr), scale(right, -sr))
-  }};
-}}
-
-function project(point, basis, width, height) {{
-  const distance = Math.max(0.1, Number(state.distance) || DATA.camera.distance || 3.5);
-  const drawScale = 0.43 * Math.min(width, height) * (3.5 / distance);
-  return {{
-    x: width / 2 + dot(point, basis.right) * drawScale,
-    y: height / 2 - dot(point, basis.up) * drawScale,
-    depth: dot(point, basis.forward),
-    front: dot(point, basis.eye) >= -0.025,
-    scale: drawScale
-  }};
-}}
-
-function drawSurface(basis, width, height) {{
-  const triangles = [];
-  const indices = DATA.surface.indices;
-  for (let i = 0; i < indices.length; i += 3) {{
-    const i0 = indices[i];
-    const i1 = indices[i + 1];
-    const i2 = indices[i + 2];
-    const p0 = pointAt(DATA.surface.positions, i0);
-    const p1 = pointAt(DATA.surface.positions, i1);
-    const p2 = pointAt(DATA.surface.positions, i2);
-    triangles.push({{
-      p0,
-      p1,
-      p2,
-      depth: (dot(p0, basis.forward) + dot(p1, basis.forward) + dot(p2, basis.forward)) / 3,
-      color: averageTriangleColor(i0, i1, i2)
-    }});
-  }}
-
-  triangles.sort((a, b) => b.depth - a.depth);
-  for (const tri of triangles) {{
-    const a = project(tri.p0, basis, width, height);
-    const b = project(tri.p1, basis, width, height);
-    const c = project(tri.p2, basis, width, height);
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.lineTo(c.x, c.y);
-    ctx.closePath();
-    ctx.fillStyle = tri.color;
-    ctx.strokeStyle = tri.color;
-    ctx.lineWidth = 0.25;
-    ctx.fill();
-    ctx.stroke();
-  }}
-}}
-
-function drawSegment(a, b, basis, width, height, color, lineWidth, opacity, dashed, frontOnly) {{
-  const midpoint = scale(add(a, b), 0.5);
-  if (frontOnly && dot(midpoint, basis.eye) < -0.02) return;
-  const pa = project(a, basis, width, height);
-  const pb = project(b, basis, width, height);
-  ctx.save();
-  ctx.strokeStyle = hexToRgba(color, opacity);
-  ctx.lineWidth = lineWidth;
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-  if (dashed) ctx.setLineDash([8, 5]);
-  ctx.beginPath();
-  ctx.moveTo(pa.x, pa.y);
-  ctx.lineTo(pb.x, pb.y);
-  ctx.stroke();
-  ctx.restore();
-}}
-
-function drawSegments(values, basis, width, height, color, lineWidth, opacity, dashed, frontOnly) {{
-  if (!values.length) return;
-  for (let i = 0; i < values.length; i += 6) {{
-    drawSegment(
-      pointFromOffset(values, i),
-      pointFromOffset(values, i + 3),
-      basis,
-      width,
-      height,
-      color,
-      lineWidth,
-      opacity,
-      dashed,
-      frontOnly
-    );
-  }}
-}}
-
-function drawArrowLine(start, end, basis, width, height, color, lineWidth, headSize, frontOnly) {{
-  const midpoint = scale(add(start, end), 0.5);
-  if (frontOnly && dot(midpoint, basis.eye) < -0.02) return;
-  const a = project(start, basis, width, height);
-  const b = project(end, basis, width, height);
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const length = Math.hypot(dx, dy);
-  if (length <= 0.1) return;
-  const ux = dx / length;
-  const uy = dy / length;
-  const px = -uy;
-  const py = ux;
-  const head = Math.max(headSize, lineWidth * 3.5);
-  ctx.save();
-  ctx.strokeStyle = color;
-  ctx.fillStyle = color;
-  ctx.lineWidth = lineWidth;
-  ctx.lineCap = "round";
-  ctx.beginPath();
-  ctx.moveTo(a.x, a.y);
-  ctx.lineTo(b.x - ux * head * 0.65, b.y - uy * head * 0.65);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(b.x, b.y);
-  ctx.lineTo(b.x - ux * head - px * head * 0.42, b.y - uy * head - py * head * 0.42);
-  ctx.lineTo(b.x - ux * head + px * head * 0.42, b.y - uy * head + py * head * 0.42);
-  ctx.closePath();
-  ctx.fill();
-  ctx.restore();
-}}
-
-function drawWindArrows(basis, width, height) {{
-  const starts = DATA.arrows.starts;
-  const directions = DATA.arrows.directions;
-  for (let i = 0; i < DATA.arrows.lengths.length; i += 1) {{
-    const p = 3 * i;
-    const start = pointFromOffset(starts, p);
-    const direction = pointFromOffset(directions, p);
-    const length = DATA.arrows.lengths[i];
-    const end = add(start, scale(direction, length));
-    const lineWidth = Math.max(1.0, 17.0 * length);
-    drawArrowLine(start, end, basis, width, height, DATA.arrows.color, lineWidth, Math.max(5.0, 58.0 * length), true);
-  }}
-}}
-
-function drawAxes(basis, width, height) {{
-  if (DATA.axes.mode === "none" || DATA.axes.mode === "corner") return;
-  const L = DATA.axes.length;
-  const items = [
-    {{ label: "X", direction: [1, 0, 0] }},
-    {{ label: "Y", direction: [0, 1, 0] }},
-    {{ label: "Z", direction: [0, 0, 1] }}
-  ];
-  ctx.save();
-  ctx.font = "13px Arial, sans-serif";
-  ctx.fillStyle = DATA.axes.color;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  for (const item of items) {{
-    const end = scale(item.direction, L);
-    drawArrowLine([0, 0, 0], end, basis, width, height, DATA.axes.color, 2.0, 8.0, false);
-    const labelPoint = project(scale(item.direction, L * 1.08), basis, width, height);
-    ctx.fillText(item.label, labelPoint.x, labelPoint.y);
-  }}
-  ctx.restore();
-}}
-
-function drawRotationAxis(basis, width, height) {{
-  if (!DATA.rotationAxis.show) return;
-  const d = DATA.rotationAxis.direction;
-  const L = DATA.rotationAxis.length;
-  drawArrowLine(
-    [-L * d[0], -L * d[1], -L * d[2]],
-    [L * d[0], L * d[1], L * d[2]],
-    basis,
-    width,
-    height,
-    DATA.rotationAxis.color,
-    DATA.rotationAxis.width,
-    Math.max(11.0, DATA.rotationAxis.width * 4.8),
-    false
-  );
-}}
-
-function drawRotationRing(basis, width, height) {{
-  if (!DATA.rotationRing.show) return;
-  const points = DATA.rotationRing.points;
-  for (let i = 0; i < points.length - 3; i += 3) {{
-    drawSegment(
-      pointFromOffset(points, i),
-      pointFromOffset(points, i + 3),
-      basis,
-      width,
-      height,
-      DATA.rotationRing.color,
-      DATA.rotationRing.width,
-      1,
-      false,
-      true
-    );
-  }}
-  drawRingCone(basis, width, height);
-}}
-
-function drawRingCone(basis, width, height) {{
-  const center = DATA.rotationRing.conePosition;
-  const direction = normalize(DATA.rotationRing.coneDirection);
-  const tip = add(center, scale(direction, DATA.rotationRing.coneHeight * 0.5));
-  const base = add(center, scale(direction, -DATA.rotationRing.coneHeight * 0.5));
-  const centerProjected = project(center, basis, width, height);
-  if (dot(center, basis.eye) < -0.05) return;
-  const tipProjected = project(tip, basis, width, height);
-  const baseProjected = project(base, basis, width, height);
-  let dx = tipProjected.x - baseProjected.x;
-  let dy = tipProjected.y - baseProjected.y;
-  let length = Math.hypot(dx, dy);
-  if (length <= 0.1) {{
-    dx = 1;
-    dy = 0;
-    length = 1;
-  }}
-  const px = -dy / length;
-  const py = dx / length;
-  const halfWidth = DATA.rotationRing.coneRadius * centerProjected.scale;
-  ctx.save();
-  ctx.fillStyle = DATA.rotationRing.color;
-  ctx.beginPath();
-  ctx.moveTo(tipProjected.x, tipProjected.y);
-  ctx.lineTo(baseProjected.x + px * halfWidth, baseProjected.y + py * halfWidth);
-  ctx.lineTo(baseProjected.x - px * halfWidth, baseProjected.y - py * halfWidth);
-  ctx.closePath();
-  ctx.fill();
-  ctx.restore();
-}}
-
-function render() {{
-  const size = canvasSize();
-  const width = size.width;
-  const height = size.height;
-  const basis = cameraBasis();
-  ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, width, height);
-  drawSurface(basis, width, height);
-  drawSegments(DATA.edges.segments, basis, width, height, DATA.edges.color, 0.45, DATA.edges.opacity, false, true);
-  for (const contour of DATA.contours.items) {{
-    drawSegments(contour.segments, basis, width, height, contour.color, DATA.contours.width, 1, true, true);
-  }}
-  drawWindArrows(basis, width, height);
-  drawAxes(basis, width, height);
-  drawRotationAxis(basis, width, height);
-  drawRotationRing(basis, width, height);
-}}
-
-function setInputsFromState() {{
-  document.getElementById("camera-azimuth").value = Number(state.azimuth).toFixed(2);
-  document.getElementById("camera-elevation").value = Number(state.elevation).toFixed(2);
-  document.getElementById("camera-distance").value = Number(state.distance).toFixed(2);
-  document.getElementById("camera-roll").value = Number(state.roll).toFixed(2);
-}}
-
-function setStateFromInputs() {{
-  state.azimuth = Number(document.getElementById("camera-azimuth").value) || 0;
-  state.elevation = clamp(Number(document.getElementById("camera-elevation").value) || 0, -89.9, 89.9);
-  state.distance = Math.max(0.1, Number(document.getElementById("camera-distance").value) || DATA.camera.distance || 3.5);
-  state.roll = Number(document.getElementById("camera-roll").value) || 0;
-  setInputsFromState();
-  render();
-}}
-
-function initControls() {{
-  setInputsFromState();
-  document.getElementById("camera-panel").addEventListener("submit", (event) => {{
-    event.preventDefault();
-    setStateFromInputs();
-  }});
-  for (const id of ["camera-azimuth", "camera-elevation", "camera-distance", "camera-roll"]) {{
-    document.getElementById(id).addEventListener("change", setStateFromInputs);
-  }}
-  canvas.addEventListener("pointerdown", (event) => {{
-    dragStart = {{
-      x: event.clientX,
-      y: event.clientY,
-      azimuth: state.azimuth,
-      elevation: state.elevation
-    }};
-    canvas.setPointerCapture(event.pointerId);
-  }});
-  canvas.addEventListener("pointermove", (event) => {{
-    if (!dragStart) return;
-    state.azimuth = dragStart.azimuth - (event.clientX - dragStart.x) * 0.35;
-    state.elevation = clamp(dragStart.elevation + (event.clientY - dragStart.y) * 0.25, -89.9, 89.9);
-    setInputsFromState();
-    render();
-  }});
-  canvas.addEventListener("pointerup", () => {{
-    dragStart = null;
-  }});
-  canvas.addEventListener("pointercancel", () => {{
-    dragStart = null;
-  }});
-}}
-
-function initOverlay() {{
-  const colorbar = document.getElementById("colorbar");
-  colorbar.style.display = DATA.colorbar.show ? "grid" : "none";
-  const ticks = document.getElementById("colorbar-ticks");
-  const amplitude = DATA.colorbar.amplitude;
-  ticks.innerHTML = [amplitude, 0.75 * amplitude, 0.5 * amplitude, 0.25 * amplitude, 0]
-    .map((value) => `<span>${{value.toFixed(0)}}</span>`)
-    .join("");
-  document.getElementById("contour-label").textContent = DATA.contours.label;
-}}
-
-initControls();
-initOverlay();
-render();
-window.addEventListener("resize", render);
-</script>
-</body>
-</html>
-"""
 
 
 def format_sanity_checks(fields: PosterSphereFields) -> str:
