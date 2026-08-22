@@ -1,0 +1,303 @@
+{
+  "configuration": {
+    "alpha0": -0.7853981633974483,
+    "flux_type": "central",
+    "ndivs": [
+      1,
+      2,
+      4,
+      8
+    ],
+    "omega": [
+      0.4442882938158366,
+      0.0,
+      0.4442882938158366
+    ],
+    "order": 4,
+    "radius": 1.0,
+    "roundoff_tolerance": 1e-12,
+    "sbp_variant": "projected",
+    "table": "table1",
+    "u0": 0.6283185307179586,
+    "use_numba": false,
+    "volume_form": "split"
+  },
+  "direct_coefficient_formula": "geom.face_jacobian * full.surface.normal_velocity",
+  "direct_coefficient_scaling_interpretation": "src/simplex_dg/geometry/sphere.py::map_reference_face_to_sphere_element normalizes face_conormal to unit length, and validate_geometry_cache checks ||geom.face_conormal|| = 1. src/simplex_dg/rhs/surface.py::build_surface_rhs_cache sets normal_velocity = sum(face_velocity * geom.face_conormal, axis=3), so normal_velocity is u dot unit_conormal and must be multiplied by face_jacobian to obtain the oriented physical line coefficient.",
+  "face_conormal_interpretation": "unit co-normal",
+  "face_conormal_source": "src/simplex_dg/geometry/sphere.py::map_reference_face_to_sphere_element and validate_geometry_cache",
+  "face_files": [
+    "faces_ndiv1.csv",
+    "faces_ndiv2.csv",
+    "faces_ndiv4.csv",
+    "faces_ndiv8.csv"
+  ],
+  "final_classification": "Case A: Direct compatible, projected incompatible",
+  "git_commit": "b1857f562c9794a8f61ccfa6cc1ea3cdacad9273",
+  "normal_velocity_source": "src/simplex_dg/rhs/surface.py::build_surface_rhs_cache",
+  "summary": [
+    {
+      "classification": "Case A: Direct compatible, projected incompatible",
+      "direct_coefficient_formula": "geom.face_jacobian * full.surface.normal_velocity",
+      "direct_coefficient_interpretation": "unit co-normal",
+      "direct_mismatch_rate": null,
+      "face_csv": "faces_ndiv1.csv",
+      "global_direct_l2": 8.142260853191116e-17,
+      "global_projected_l2": 0.06255426669212807,
+      "hmin": 1.5711711711711716,
+      "max_abs_direct_M": 1.256637061435917,
+      "max_abs_projected_M": 1.2741321525324005,
+      "max_abs_projected_minus_direct_M": 0.034419346695548025,
+      "max_decomposition_error": 0.0,
+      "max_direct_mismatch": 5.551115123125783e-17,
+      "max_face_conormal_mismatch": 4.0272304637829206e-16,
+      "max_face_coordinate_mismatch": 5.551115123125783e-17,
+      "max_face_jacobian_mismatch": 0.0,
+      "max_projected_direct_difference": 0.034419346695548025,
+      "max_projected_mismatch": 0.030896237809314275,
+      "max_relative_direct_mismatch": 8.413378721797921e-17,
+      "max_relative_projected_direct_difference": 0.04972746810633935,
+      "max_relative_projected_mismatch": 0.04750156155083074,
+      "n_elements": 8,
+      "n_points_per_element": 22,
+      "ndivs": 1,
+      "order": 4,
+      "projected_direct_difference_rate": null,
+      "projected_mismatch_rate": null,
+      "relative_projected_direct_M_difference": 0.027013953479737462,
+      "total_dofs": 176
+    },
+    {
+      "classification": "Case A: Direct compatible, projected incompatible",
+      "direct_coefficient_formula": "geom.face_jacobian * full.surface.normal_velocity",
+      "direct_coefficient_interpretation": "unit co-normal",
+      "direct_mismatch_rate": null,
+      "face_csv": "faces_ndiv2.csv",
+      "global_direct_l2": 3.606863266912638e-16,
+      "global_projected_l2": 0.0031001555091425014,
+      "hmin": 0.785398279620715,
+      "max_abs_direct_M": 0.7255197456936872,
+      "max_abs_projected_M": 0.7263213203375577,
+      "max_abs_projected_minus_direct_M": 0.0016990512994026104,
+      "max_decomposition_error": 0.0,
+      "max_direct_mismatch": 2.220446049250313e-16,
+      "max_face_conormal_mismatch": 2.220446049250313e-16,
+      "max_face_coordinate_mismatch": 1.1102230246251565e-16,
+      "max_face_jacobian_mismatch": 2.220446049250313e-16,
+      "max_projected_direct_difference": 0.0016990512994026104,
+      "max_projected_mismatch": 0.0013558734264230154,
+      "max_relative_direct_mismatch": 5.461857821205762e-16,
+      "max_relative_projected_direct_difference": 0.007805009736455093,
+      "max_relative_projected_mismatch": 0.0036423099516507567,
+      "n_elements": 32,
+      "n_points_per_element": 22,
+      "ndivs": 2,
+      "order": 4,
+      "projected_direct_difference_rate": 4.338925716960214,
+      "projected_mismatch_rate": 4.508585716333952,
+      "relative_projected_direct_M_difference": 0.002339255714830148,
+      "total_dofs": 704
+    },
+    {
+      "classification": "Case A: Direct compatible, projected incompatible",
+      "direct_coefficient_formula": "geom.face_jacobian * full.surface.normal_velocity",
+      "direct_coefficient_interpretation": "unit co-normal",
+      "direct_mismatch_rate": null,
+      "face_csv": "faces_ndiv4.csv",
+      "global_direct_l2": 4.3901287894398453e-16,
+      "global_projected_l2": 6.924952422346859e-05,
+      "hmin": 0.32175055440225403,
+      "max_abs_direct_M": 0.3788903300397933,
+      "max_abs_projected_M": 0.3789019925204644,
+      "max_abs_projected_minus_direct_M": 3.707785598081048e-05,
+      "max_decomposition_error": 0.0,
+      "max_direct_mismatch": 1.6653345369377348e-16,
+      "max_face_conormal_mismatch": 3.3306690738754696e-16,
+      "max_face_coordinate_mismatch": 1.1102230246251565e-16,
+      "max_face_jacobian_mismatch": 1.1102230246251565e-16,
+      "max_projected_direct_difference": 3.707785598081048e-05,
+      "max_projected_mismatch": 2.74134146648064e-05,
+      "max_relative_direct_mismatch": 3.495207829715113e-15,
+      "max_relative_projected_direct_difference": 0.00044092813297295707,
+      "max_relative_projected_mismatch": 0.00019508549038206398,
+      "n_elements": 128,
+      "n_points_per_element": 22,
+      "ndivs": 4,
+      "order": 4,
+      "projected_direct_difference_rate": 4.285907392453494,
+      "projected_mismatch_rate": 4.371476658164946,
+      "relative_projected_direct_M_difference": 9.785605964795214e-05,
+      "total_dofs": 2816
+    },
+    {
+      "classification": "Case A: Direct compatible, projected incompatible",
+      "direct_coefficient_formula": "geom.face_jacobian * full.surface.normal_velocity",
+      "direct_coefficient_interpretation": "unit co-normal",
+      "direct_mismatch_rate": null,
+      "face_csv": "faces_ndiv8.csv",
+      "global_direct_l2": 5.276252707716417e-16,
+      "global_projected_l2": 1.642847617991092e-06,
+      "hmin": 0.14189705460416463,
+      "max_abs_direct_M": 0.19163535529594294,
+      "max_abs_projected_M": 0.19163546393229794,
+      "max_abs_projected_minus_direct_M": 5.080303647486684e-07,
+      "max_decomposition_error": 0.0,
+      "max_direct_mismatch": 1.1102230246251565e-16,
+      "max_face_conormal_mismatch": 3.3306690738754696e-16,
+      "max_face_coordinate_mismatch": 1.1102230246251565e-16,
+      "max_face_jacobian_mismatch": 1.1102230246251565e-16,
+      "max_projected_direct_difference": 5.080303647486684e-07,
+      "max_projected_mismatch": 3.601218025485464e-07,
+      "max_relative_direct_mismatch": 1.0065278743501479e-14,
+      "max_relative_projected_direct_difference": 2.265499358615159e-05,
+      "max_relative_projected_mismatch": 8.749552318554516e-06,
+      "n_elements": 512,
+      "n_points_per_element": 22,
+      "ndivs": 8,
+      "order": 4,
+      "projected_direct_difference_rate": 5.240462121507893,
+      "projected_mismatch_rate": 5.291900701946708,
+      "relative_projected_direct_M_difference": 2.651024785934968e-06,
+      "total_dofs": 11264
+    }
+  ],
+  "timestamp": "2026-08-08T10:15:20.226474+00:00",
+  "worst_direct_interfaces": {
+    "1": {
+      "X_face_M": [
+        0.0,
+        0.28734211486163147,
+        0.9578280164136176
+      ],
+      "X_face_P": [
+        0.0,
+        0.2873421148616314,
+        0.9578280164136176
+      ],
+      "a_direct_M": 0.1979345204580106,
+      "a_direct_P": -0.19793452045801055,
+      "a_projected_M": 0.1963251671512859,
+      "a_projected_P": -0.1728856223853291,
+      "abs_direct_mismatch": 5.551115123125783e-17,
+      "element": 0,
+      "face": 0,
+      "face_conormal_M": [
+        -1.0,
+        -1.8589852883531892e-17,
+        -6.19675327489974e-17
+      ],
+      "face_conormal_P": [
+        1.0,
+        0.0,
+        -0.0
+      ],
+      "face_jacobian_M": 1.550448655820021,
+      "face_jacobian_P": 1.550448655820021,
+      "face_node_index": 3,
+      "neighbor_element": 1,
+      "neighbor_face": 1
+    },
+    "2": {
+      "X_face_M": [
+        0.7796871953240133,
+        0.5997624107441848,
+        0.17992478457982847
+      ],
+      "X_face_P": [
+        0.7796871953240133,
+        0.5997624107441849,
+        0.17992478457982847
+      ],
+      "a_direct_M": -0.48596632130200845,
+      "a_direct_P": 0.4859663213020087,
+      "a_projected_M": -0.4850194979667191,
+      "a_projected_P": 0.4855065020827318,
+      "abs_direct_mismatch": 2.220446049250313e-16,
+      "element": 1,
+      "face": 2,
+      "face_conormal_M": [
+        0.5773502691896257,
+        -0.5773502691896257,
+        -0.5773502691896257
+      ],
+      "face_conormal_P": [
+        -0.5773502691896258,
+        0.5773502691896258,
+        0.5773502691896258
+      ],
+      "face_jacobian_M": 1.0529346827974935,
+      "face_jacobian_P": 1.0529346827974935,
+      "face_node_index": 3,
+      "neighbor_element": 3,
+      "neighbor_face": 1
+    },
+    "4": {
+      "X_face_M": [
+        -0.3907835668395242,
+        0.40568212312694013,
+        0.8262628025412964
+      ],
+      "X_face_P": [
+        -0.3907835668395242,
+        0.40568212312694013,
+        0.8262628025412962
+      ],
+      "a_direct_M": -0.2581807635516964,
+      "a_direct_P": 0.2581807635516962,
+      "a_projected_M": -0.2581835468886084,
+      "a_projected_P": 0.25818183013184076,
+      "abs_direct_mismatch": 1.6653345369377348e-16,
+      "element": 17,
+      "face": 2,
+      "face_conormal_M": [
+        0.3015113445777637,
+        0.9045340337332909,
+        -0.3015113445777637
+      ],
+      "face_conormal_P": [
+        -0.3015113445777636,
+        -0.9045340337332908,
+        0.3015113445777637
+      ],
+      "face_jacobian_M": 0.4318936286667605,
+      "face_jacobian_P": 0.43189362866676045,
+      "face_node_index": 4,
+      "neighbor_element": 23,
+      "neighbor_face": 1
+    },
+    "8": {
+      "X_face_M": [
+        -0.6491370349345444,
+        0.4263621848376046,
+        0.6299495195782693
+      ],
+      "X_face_P": [
+        -0.6491370349345444,
+        0.4263621848376046,
+        0.6299495195782694
+      ],
+      "a_direct_M": -0.18205629829833497,
+      "a_direct_P": 0.18205629829833508,
+      "a_projected_M": -0.1820563521959373,
+      "a_projected_P": 0.1820563823393341,
+      "abs_direct_mismatch": 1.1102230246251565e-16,
+      "element": 86,
+      "face": 2,
+      "face_conormal_M": [
+        0.3015113445777637,
+        0.904534033733291,
+        -0.3015113445777634
+      ],
+      "face_conormal_P": [
+        -0.30151134457776363,
+        -0.9045340337332909,
+        0.30151134457776346
+      ],
+      "face_jacobian_M": 0.2897782704254733,
+      "face_jacobian_P": 0.2897782704254734,
+      "face_node_index": 0,
+      "neighbor_element": 98,
+      "neighbor_face": 1
+    }
+  }
+}

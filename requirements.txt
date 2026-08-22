@@ -2,3 +2,4 @@ numpy>=1.26
 scipy>=1.11
 matplotlib>=3.8
 numba>=0.59
+pyvista>=0.44

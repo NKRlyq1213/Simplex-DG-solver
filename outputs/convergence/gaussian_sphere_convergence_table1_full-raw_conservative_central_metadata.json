@@ -1,0 +1,34 @@
+{
+  "alpha0": -0.7853981633974483,
+  "amplitude": 1000.0,
+  "cfl_requested": 1.0,
+  "flux": "central",
+  "form": "conservative",
+  "git_commit": "b1857f562c9794a8f61ccfa6cc1ea3cdacad9273",
+  "history_every": 1,
+  "lf_alpha": 1.0,
+  "ndivs": [
+    1,
+    2,
+    4,
+    8
+  ],
+  "omega": [
+    4.2164777362153834e-06,
+    0.0,
+    4.2164777362153834e-06
+  ],
+  "order": 4,
+  "output_csv": "outputs\\convergence\\gaussian_sphere_convergence_table1_full-raw_conservative_central.csv",
+  "plot_dir": "outputs\\convergence\\plots\\table1_full-raw_conservative_central",
+  "radius": 6371000.0,
+  "sbp_variant": "full-raw",
+  "scheme_id": "table1_full-raw_conservative_central",
+  "sigma_angle": 0.35,
+  "sigma_physical": 2229850.0,
+  "table": "table1",
+  "tf": 103680.0,
+  "timestamp": "2026-07-29T05:51:02.194552+00:00",
+  "u0": 5.963e-06,
+  "use_numba": true
+}
