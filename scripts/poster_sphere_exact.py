@@ -23,14 +23,20 @@ except ModuleNotFoundError:
 
 from simplex_dg.visualization.poster_sphere import (
     DEFAULT_ARROW_RADIUS_OFFSET,
+    DEFAULT_CAMERA_AZIMUTH,
+    DEFAULT_CAMERA_DISTANCE,
+    DEFAULT_CAMERA_ELEVATION,
+    DEFAULT_CAMERA_ROLL,
     DEFAULT_POSTER_AMPLITUDE,
     EARTH_RADIUS_METERS,
     SURFACE_ARROW_RADIUS_OFFSET,
     build_exact_fields,
+    configure_camera_from_angles,
     format_sanity_checks,
     render_scene,
     resolve_rotation_axis_radii,
     resolve_sigma_physical,
+    save_html,
     save_screenshot,
 )
 
@@ -80,6 +86,10 @@ _EXPR_OPTIONS = {
     "--colorbar-position-y",
     "--dash-length",
     "--gap-length",
+    "--camera-azimuth",
+    "--camera-elevation",
+    "--camera-distance",
+    "--camera-roll",
 }
 
 DEFAULT_PERIOD_DAYS = 12.0
@@ -343,6 +353,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     output = parser.add_argument_group("preview / export")
     output.add_argument("--output", type=str, default=None, help="Optional PNG screenshot path.")
+    output.add_argument("--html-output", type=str, default=None, help="Optional interactive HTML export path.")
     output.add_argument("--window-size", nargs=2, type=int, default=[1600, 1200], metavar=("WIDTH", "HEIGHT"))
     output.add_argument("--transparent-background", action="store_true")
     output.add_argument("--show", action="store_true", help="Show the interactive window even when --output is set.")
@@ -360,6 +371,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--save-key",
         default="s",
         help="Keyboard key used by --save-current-view. Default: s.",
+    )
+
+    camera = parser.add_argument_group("camera angle controls")
+    camera.add_argument("--camera-azimuth", type=parse_float_expr, default=None, help="Camera azimuth in degrees.")
+    camera.add_argument("--camera-elevation", type=parse_float_expr, default=None, help="Camera elevation in degrees.")
+    camera.add_argument(
+        "--camera-distance",
+        type=parse_float_expr,
+        default=None,
+        help="Camera distance from the sphere center in normalized plot-radius units.",
+    )
+    camera.add_argument("--camera-roll", type=parse_float_expr, default=None, help="Camera roll in degrees.")
+    camera.add_argument(
+        "--camera-input",
+        action="store_true",
+        help="In the interactive window, press --camera-input-key to type camera angles in the terminal.",
+    )
+    camera.add_argument(
+        "--camera-input-key",
+        default="c",
+        help="Keyboard key used by --camera-input. Default: c.",
     )
     output.add_argument("--check-only", action="store_true", help="Build exact fields and print sanity checks only.")
 
@@ -460,8 +492,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if args.show and args.no_show:
         parser.error("--show and --no-show cannot both be set.")
 
-    if args.save_current_view and args.output is None:
-        parser.error("--save-current-view requires --output.")
+    if args.save_current_view and args.output is None and args.html_output is None:
+        parser.error("--save-current-view requires --output or --html-output.")
 
     if args.save_current_view and args.no_show:
         parser.error("--save-current-view cannot be used with --no-show.")
@@ -469,28 +501,140 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if args.save_current_view and args.off_screen:
         parser.error("--save-current-view cannot be used with --off-screen.")
 
+    if args.camera_input and args.no_show:
+        parser.error("--camera-input cannot be used with --no-show.")
+
+    if args.camera_input and args.off_screen:
+        parser.error("--camera-input cannot be used with --off-screen.")
+
     if not args.save_key.strip():
         parser.error("--save-key must be nonempty.")
+
+    if not args.camera_input_key.strip():
+        parser.error("--camera-input-key must be nonempty.")
+
+    if args.camera_distance is not None and args.camera_distance <= 0.0:
+        parser.error("--camera-distance must be positive.")
+
+    if args.camera_elevation is not None and not (-90.0 < args.camera_elevation < 90.0):
+        parser.error("--camera-elevation must be in (-90, 90).")
 
     return args
 
 
+def resolve_camera_angle_state(args: argparse.Namespace) -> dict[str, float]:
+    return {
+        "azimuth": DEFAULT_CAMERA_AZIMUTH if args.camera_azimuth is None else float(args.camera_azimuth),
+        "elevation": DEFAULT_CAMERA_ELEVATION if args.camera_elevation is None else float(args.camera_elevation),
+        "distance": DEFAULT_CAMERA_DISTANCE if args.camera_distance is None else float(args.camera_distance),
+        "roll": DEFAULT_CAMERA_ROLL if args.camera_roll is None else float(args.camera_roll),
+    }
+
+
+def has_explicit_camera_angles(args: argparse.Namespace) -> bool:
+    return any(
+        value is not None
+        for value in (
+            args.camera_azimuth,
+            args.camera_elevation,
+            args.camera_distance,
+            args.camera_roll,
+        )
+    )
+
+
+def apply_camera_angle_state(plotter, state: dict[str, float]) -> None:
+    configure_camera_from_angles(
+        plotter,
+        azimuth=state["azimuth"],
+        elevation=state["elevation"],
+        distance=state["distance"],
+        roll=state["roll"],
+    )
+    plotter.render()
+
+
+def format_camera_angle_state(state: dict[str, float]) -> str:
+    return (
+        f"azimuth={state['azimuth']:.6g}, "
+        f"elevation={state['elevation']:.6g}, "
+        f"distance={state['distance']:.6g}, "
+        f"roll={state['roll']:.6g}"
+    )
+
+
+def read_camera_angle_value(name: str, current: float) -> float:
+    raw = input(f"{name} [{current:.6g}]: ").strip()
+
+    if not raw:
+        return current
+
+    return float(raw)
+
+
+def add_camera_input_key(
+    plotter,
+    state: dict[str, float],
+    *,
+    key: str,
+) -> None:
+    def update_camera_from_terminal() -> None:
+        print("")
+        print("Camera angle input. Press Enter to keep the current value.")
+
+        try:
+            next_state = {
+                "azimuth": read_camera_angle_value("azimuth degrees", state["azimuth"]),
+                "elevation": read_camera_angle_value("elevation degrees (-90, 90)", state["elevation"]),
+                "distance": read_camera_angle_value("distance plot-radius units", state["distance"]),
+                "roll": read_camera_angle_value("roll degrees", state["roll"]),
+            }
+        except ValueError:
+            print("Invalid camera value; camera unchanged.")
+            return
+
+        if next_state["distance"] <= 0.0:
+            print("Invalid camera value; distance must be positive.")
+            return
+
+        if not (-90.0 < next_state["elevation"] < 90.0):
+            print("Invalid camera value; elevation must be in (-90, 90).")
+            return
+
+        state.update(next_state)
+        apply_camera_angle_state(plotter, state)
+        print(f"Camera angles applied     : {format_camera_angle_state(state)}")
+
+    plotter.add_key_event(key.strip(), update_camera_from_terminal)
+
+
 def add_current_view_save_key(
     plotter,
-    output: str,
+    png_output: str | None,
+    html_output: str | None,
     *,
     key: str,
     transparent_background: bool,
     window_size: tuple[int, int],
 ) -> None:
     def save_current_view() -> None:
-        output_path = save_screenshot(
-            plotter,
-            output,
-            transparent_background=transparent_background,
-            window_size=window_size,
-        )
-        print(f"Current camera PNG written to: {output_path}")
+        if png_output is not None:
+            output_path = save_screenshot(
+                plotter,
+                png_output,
+                transparent_background=transparent_background,
+                window_size=window_size,
+            )
+            print(f"Current camera PNG written to : {output_path}")
+
+        if html_output is not None:
+            html_output_path = save_html(
+                plotter,
+                html_output,
+                window_size=window_size,
+            )
+            print(f"Current camera HTML written to: {html_output_path}")
+
         print(f"Camera position             : {plotter.camera_position}")
 
     plotter.add_key_event(key.strip(), save_current_view)
@@ -628,11 +772,19 @@ def main(argv: list[str] | None = None) -> int:
         f"colorbar_label={colorbar_label_font_size}, colorbar_title={colorbar_title_font_size}, "
         f"axes={axes_label_font_size}"
     )
+    camera_angle_state = resolve_camera_angle_state(args)
+    print(f"camera_angles          : {format_camera_angle_state(camera_angle_state)}")
 
     if args.check_only:
         return 0
 
-    interactive = bool(args.save_current_view or args.show or (args.output is None and not args.no_show))
+    has_export_output = args.output is not None or args.html_output is not None
+    interactive = bool(
+        args.save_current_view
+        or args.camera_input
+        or args.show
+        or (not has_export_output and not args.no_show)
+    )
     off_screen = bool(args.off_screen or not interactive)
     window_size = (int(args.window_size[0]), int(args.window_size[1]))
 
@@ -699,24 +851,48 @@ def main(argv: list[str] | None = None) -> int:
         off_screen=off_screen,
     )
 
+    if has_explicit_camera_angles(args) or args.camera_input:
+        apply_camera_angle_state(plotter, camera_angle_state)
+
+    if args.camera_input:
+        add_camera_input_key(
+            plotter,
+            camera_angle_state,
+            key=args.camera_input_key,
+        )
+        print(f"Interactive camera key  : {args.camera_input_key.strip()}")
+
     if args.save_current_view:
         add_current_view_save_key(
             plotter,
             args.output,
+            args.html_output,
             key=args.save_key,
             transparent_background=args.transparent_background,
             window_size=window_size,
         )
         print(f"Interactive save key     : {args.save_key.strip()}")
-        print(f"Current-view output PNG  : {args.output}")
-    elif args.output is not None:
-        output_path = save_screenshot(
-            plotter,
-            args.output,
-            transparent_background=args.transparent_background,
-            window_size=window_size,
-        )
-        print(f"PNG written to          : {output_path}")
+        if args.output is not None:
+            print(f"Current-view output PNG  : {args.output}")
+        if args.html_output is not None:
+            print(f"Current-view output HTML : {args.html_output}")
+    else:
+        if args.output is not None:
+            output_path = save_screenshot(
+                plotter,
+                args.output,
+                transparent_background=args.transparent_background,
+                window_size=window_size,
+            )
+            print(f"PNG written to          : {output_path}")
+
+        if args.html_output is not None:
+            html_output_path = save_html(
+                plotter,
+                args.html_output,
+                window_size=window_size,
+            )
+            print(f"HTML written to         : {html_output_path}")
 
     if interactive:
         plotter.show()

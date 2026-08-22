@@ -7,10 +7,15 @@ from examples.check_metric_divergence import rotation_axis_from_alpha0
 from scripts import poster_sphere_exact
 from simplex_dg.visualization.poster_sphere import (
     DEFAULT_ARROW_RADIUS_OFFSET,
+    DEFAULT_CAMERA_AZIMUTH,
+    DEFAULT_CAMERA_DISTANCE,
+    DEFAULT_CAMERA_ELEVATION,
+    DEFAULT_CAMERA_ROLL,
     DEFAULT_POSTER_AMPLITUDE,
     EARTH_RADIUS_METERS,
     SURFACE_ARROW_RADIUS_OFFSET,
     build_exact_fields,
+    camera_position_from_angles,
     format_scalar_values,
     reference_plot_triangulation,
     resolve_contour_label_position,
@@ -176,6 +181,32 @@ def test_rotation_ring_cone_size_scales_cone_dimensions():
     assert radius == pytest.approx(0.04)
 
 
+def test_camera_position_from_angles_uses_degrees_and_plot_radius_units():
+    position, focal_point, view_up = camera_position_from_angles(
+        azimuth=0.0,
+        elevation=0.0,
+        distance=2.0,
+        roll=0.0,
+    )
+
+    np.testing.assert_allclose(position, np.array([2.0, 0.0, 0.0]), atol=1.0e-15)
+    np.testing.assert_allclose(focal_point, np.zeros(3), atol=1.0e-15)
+    assert np.linalg.norm(view_up) == pytest.approx(1.0)
+    assert np.dot(np.asarray(view_up), np.asarray(focal_point) - np.asarray(position)) == pytest.approx(0.0)
+
+
+def test_default_camera_angle_constants_reproduce_default_camera_position():
+    position, focal_point, _view_up = camera_position_from_angles(
+        azimuth=DEFAULT_CAMERA_AZIMUTH,
+        elevation=DEFAULT_CAMERA_ELEVATION,
+        distance=DEFAULT_CAMERA_DISTANCE,
+        roll=DEFAULT_CAMERA_ROLL,
+    )
+
+    np.testing.assert_allclose(position, np.array([2.45, -2.75, 1.75]), atol=1.0e-14)
+    np.testing.assert_allclose(focal_point, np.zeros(3), atol=1.0e-15)
+
+
 def test_resolve_contour_label_position_defaults_below_colorbar():
     position, viewport = resolve_contour_label_position(
         "below_colorbar",
@@ -224,6 +255,13 @@ def test_poster_script_parses_expression_arguments():
     assert args.arrow_scale_mode == "magnitude"
     assert args.save_current_view is False
     assert args.save_key == "s"
+    assert args.html_output is None
+    assert args.camera_input is False
+    assert args.camera_input_key == "c"
+    assert args.camera_azimuth is None
+    assert args.camera_elevation is None
+    assert args.camera_distance is None
+    assert args.camera_roll is None
 
 
 def test_poster_script_parses_arrow_placement_and_colorbar_size():
@@ -365,16 +403,60 @@ def test_poster_script_parses_current_view_export_options():
     args = poster_sphere_exact.parse_args(
         [
             "--save-current-view",
+            "--html-output",
+            "outputs/poster/manual_view.html",
             "--output",
             "outputs/poster/manual_view.png",
             "--save-key",
             "p",
+            "--camera-input",
+            "--camera-input-key",
+            "c",
+            "--camera-azimuth",
+            "-45",
+            "--camera-elevation",
+            "30",
+            "--camera-distance",
+            "3.5",
+            "--camera-roll",
+            "10",
         ]
     )
 
     assert args.save_current_view is True
     assert args.output == "outputs/poster/manual_view.png"
+    assert args.html_output == "outputs/poster/manual_view.html"
     assert args.save_key == "p"
+    assert args.camera_input is True
+    assert args.camera_input_key == "c"
+    assert args.camera_azimuth == pytest.approx(-45.0)
+    assert args.camera_elevation == pytest.approx(30.0)
+    assert args.camera_distance == pytest.approx(3.5)
+    assert args.camera_roll == pytest.approx(10.0)
+
+
+def test_camera_angle_state_uses_defaults_for_unset_values():
+    args = poster_sphere_exact.parse_args(["--camera-azimuth", "15"])
+    state = poster_sphere_exact.resolve_camera_angle_state(args)
+
+    assert state["azimuth"] == pytest.approx(15.0)
+    assert state["elevation"] == pytest.approx(DEFAULT_CAMERA_ELEVATION)
+    assert state["distance"] == pytest.approx(DEFAULT_CAMERA_DISTANCE)
+    assert state["roll"] == pytest.approx(DEFAULT_CAMERA_ROLL)
+
+
+def test_current_view_export_can_write_html_without_png():
+    args = poster_sphere_exact.parse_args(
+        [
+            "--save-current-view",
+            "--html-output",
+            "outputs/poster/manual_view.html",
+        ]
+    )
+
+    assert args.save_current_view is True
+    assert args.output is None
+    assert args.html_output == "outputs/poster/manual_view.html"
 
 
 @pytest.mark.parametrize(
@@ -421,6 +503,12 @@ def test_poster_script_parses_current_view_export_options():
         ["--save-current-view", "--output", "outputs/poster/manual_view.png", "--no-show"],
         ["--save-current-view", "--output", "outputs/poster/manual_view.png", "--off-screen"],
         ["--save-key", " "],
+        ["--camera-input", "--no-show"],
+        ["--camera-input", "--off-screen"],
+        ["--camera-input-key", " "],
+        ["--camera-distance", "0"],
+        ["--camera-elevation", "90"],
+        ["--camera-elevation", "-90"],
     ],
 )
 def test_poster_script_rejects_invalid_positive_controls(bad_args: list[str]):

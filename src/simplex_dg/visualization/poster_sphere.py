@@ -31,6 +31,15 @@ SECONDS_PER_DAY = 86400.0
 DEFAULT_POSTER_AMPLITUDE = 1000.0
 DEFAULT_ARROW_RADIUS_OFFSET = 0.055
 SURFACE_ARROW_RADIUS_OFFSET = 0.0
+DEFAULT_CAMERA_AZIMUTH = -48.30186567443501
+DEFAULT_CAMERA_ELEVATION = 25.414597789659304
+DEFAULT_CAMERA_DISTANCE = 4.077683165720456
+DEFAULT_CAMERA_ROLL = 0.0
+DEFAULT_CAMERA_POSITION = (
+    (2.45, -2.75, 1.75),
+    (0.0, 0.0, 0.0),
+    (0.0, 0.0, 1.0),
+)
 
 GYROR_COLORS = [
     (0.00, "#00a65a"),
@@ -797,16 +806,84 @@ def configure_camera(
     parallel_projection: bool = True,
 ) -> None:
     if camera_position is None:
-        camera_position = (
-            (2.45, -2.75, 1.75),
-            (0.0, 0.0, 0.0),
-            (0.0, 0.0, 1.0),
-        )
+        camera_position = DEFAULT_CAMERA_POSITION
 
     plotter.camera_position = camera_position
     plotter.camera.parallel_projection = bool(parallel_projection)
     plotter.camera.zoom(float(zoom))
     plotter.reset_camera_clipping_range()
+
+
+def camera_position_from_angles(
+    *,
+    azimuth: float = DEFAULT_CAMERA_AZIMUTH,
+    elevation: float = DEFAULT_CAMERA_ELEVATION,
+    distance: float = DEFAULT_CAMERA_DISTANCE,
+    roll: float = DEFAULT_CAMERA_ROLL,
+    focal_point: Sequence[float] = (0.0, 0.0, 0.0),
+) -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]:
+    distance = float(distance)
+
+    if distance <= 0.0:
+        raise ValueError("distance must be positive.")
+
+    azimuth_rad = np.deg2rad(float(azimuth))
+    elevation_rad = np.deg2rad(float(elevation))
+    focal = np.asarray(focal_point, dtype=float).reshape(3)
+
+    direction = np.array(
+        [
+            np.cos(elevation_rad) * np.cos(azimuth_rad),
+            np.cos(elevation_rad) * np.sin(azimuth_rad),
+            np.sin(elevation_rad),
+        ],
+        dtype=float,
+    )
+    position = focal + distance * direction
+
+    view_direction = normalize_vector(focal - position, radius=1.0)
+    world_up = np.array([0.0, 0.0, 1.0], dtype=float)
+
+    if abs(float(np.dot(view_direction, world_up))) > 0.96:
+        world_up = np.array([0.0, 1.0, 0.0], dtype=float)
+
+    right = normalize_vector(np.cross(view_direction, world_up), radius=1.0)
+    view_up = normalize_vector(np.cross(right, view_direction), radius=1.0)
+
+    if float(roll) != 0.0:
+        view_up = normalize_vector(
+            rodrigues_rotate(view_up, omega=view_direction, t=np.deg2rad(float(roll))),
+            radius=1.0,
+        )
+
+    return (
+        tuple(float(value) for value in position),
+        tuple(float(value) for value in focal),
+        tuple(float(value) for value in view_up),
+    )
+
+
+def configure_camera_from_angles(
+    plotter,
+    *,
+    azimuth: float = DEFAULT_CAMERA_AZIMUTH,
+    elevation: float = DEFAULT_CAMERA_ELEVATION,
+    distance: float = DEFAULT_CAMERA_DISTANCE,
+    roll: float = DEFAULT_CAMERA_ROLL,
+    zoom: float = 1.0,
+    parallel_projection: bool = True,
+) -> None:
+    configure_camera(
+        plotter,
+        camera_position=camera_position_from_angles(
+            azimuth=azimuth,
+            elevation=elevation,
+            distance=distance,
+            roll=roll,
+        ),
+        zoom=zoom,
+        parallel_projection=parallel_projection,
+    )
 
 
 def configure_lighting(plotter) -> None:
@@ -1432,6 +1509,33 @@ def save_screenshot(
         transparent_background=bool(transparent_background),
         return_img=False,
     )
+
+    return output_path
+
+
+def save_html(
+    plotter,
+    output: str | Path,
+    *,
+    window_size: tuple[int, int] | None = None,
+) -> Path:
+    output_path = Path(output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if window_size is not None:
+        plotter.window_size = window_size
+
+    try:
+        trame_component = getattr(plotter, "trame", None)
+        if trame_component is not None and hasattr(trame_component, "export_html"):
+            trame_component.export_html(str(output_path))
+        else:
+            plotter.export_html(str(output_path))
+    except ImportError as exc:
+        raise RuntimeError(
+            "HTML export requires PyVista's Trame exporter. Install the extra "
+            "dependencies with `pip install trame-pyvista`."
+        ) from exc
 
     return output_path
 
